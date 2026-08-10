@@ -11,11 +11,12 @@ PR-AUC) and cost (parameter count, training wall-clock, inference wall-clock) --
 efficiency is one of the study's research questions.
 
 Usage:
-    python run_experiments.py                      # synthetic, full smoke
+    python run_experiments.py                      # SMD machine-1-1 (default)
     python run_experiments.py --quick              # tiny + fast
-    python run_experiments.py --dataset smd --entity machine-1-1 --epochs 20
+    python run_experiments.py --dataset synthetic  # synthetic generator instead
 """
 import argparse
+import os
 import time
 import numpy as np
 import pandas as pd
@@ -27,8 +28,25 @@ from data import get_data, WindowDataset
 from utils import set_seed, make_windows, windows_to_series, evaluate_scores, count_params
 from diffusion import build_diffusion
 from baselines import LSTMVAE
+from imdiffusion import ImDiffusion, train_imdiffusion, score_imdiffusion
 
 SCORE_BATCH = 256
+
+
+def safe_write(path, write_fn):
+    """Write via write_fn(path), falling back to a timestamped name if the target
+    is locked. On Windows a results file left open in Excel raises PermissionError,
+    which would otherwise throw away a run that took minutes of GPU time."""
+    try:
+        write_fn(path)
+        return path
+    except PermissionError:
+        root, ext = os.path.splitext(path)
+        alt = f"{root}_{time.strftime('%Y%m%d-%H%M%S')}{ext}"
+        write_fn(alt)
+        print(f"  ! {os.path.basename(path)} is locked (open in Excel?) "
+              f"-> wrote {os.path.basename(alt)} instead")
+        return alt
 
 
 def to_markdown_table(df):
@@ -77,13 +95,16 @@ def score_series(scorer, series, L, device, stride=1):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dataset", default="synthetic", choices=["synthetic", "smd"])
+    ap.add_argument("--dataset", default="smd", choices=["synthetic", "smd"])
     ap.add_argument("--entity", default="machine-1-1")
     ap.add_argument("--epochs", type=int, default=None)
     ap.add_argument("--window", type=int, default=None)
     ap.add_argument("--infer-steps", type=int, default=None)
     ap.add_argument("--test-stride", type=int, default=1)
     ap.add_argument("--quick", action="store_true")
+    ap.add_argument("--im-cpu", action="store_true",
+                    help="shrink ImDiffusion to a CPU-tractable size (defaults are paper-exact)")
+    ap.add_argument("--no-imdiff", action="store_true", help="skip the ImDiffusion model")
     ap.add_argument("--out", default="../results")
     args = ap.parse_args()
 
@@ -96,10 +117,17 @@ def main():
         cfg.diff.infer_steps = args.infer_steps
     if args.epochs:
         cfg.train.epochs = args.epochs
+    if args.im_cpu:                      # CPU-tractable ImDiffusion (not paper-exact)
+        cfg.im.window, cfg.im.split = 64, 8
+        cfg.im.channels, cfg.im.layers = 32, 2
+        cfg.im.T, cfg.im.ensemble_steps = 25, 24
     if args.quick:
         cfg.train.epochs = 2
         cfg.data.n_features = 6
         args.test_stride = 4
+        cfg.im.window, cfg.im.split = 32, 8
+        cfg.im.channels, cfg.im.layers = 16, 1
+        cfg.im.T, cfg.im.ensemble_steps = 12, 12
     device = "cuda" if torch.cuda.is_available() else "cpu"
     cfg.train.device = device
     set_seed(cfg.data.seed)
@@ -131,8 +159,9 @@ def main():
                      train_s=tt, infer_s=it, **m))
     score_curves["LSTM-VAE"] = scores
 
-    # ---- diffusion regimes -------------------------------------------------
-    for mode in ["vanilla", "masking", "selective"]:
+    # ---- shared-backbone diffusion regimes --------------------------------
+    # (masking is now the faithful ImDiffusion below, per its own method)
+    for mode in ["vanilla", "selective"]:
         name = f"DDPM-{mode}"
         print(f"\n[{name}]")
         diff = build_diffusion(mode, D, cfg).to(device)
@@ -146,26 +175,70 @@ def main():
                          train_s=tt, infer_s=it, **m))
         score_curves[name] = scores
 
+    # ---- ImDiffusion (faithful: grating mask + CSDI + vote ensemble) -------
+    if not args.no_imdiff:
+        print("\n[ImDiffusion]  (grating mask + CSDI backbone + vote ensemble)")
+        im = ImDiffusion(D, cfg, device=device).to(device)
+        tt = train_imdiffusion(im, train_series, cfg, device)
+        im.eval()
+        scores, it, im_details = score_imdiffusion(im, test_series, cfg, device,
+                                                   return_details=True)
+        m = evaluate_scores(scores, labels)
+        rows.append(dict(model="ImDiffusion", params=count_params(im),
+                         train_s=tt, infer_s=it, **m))
+        score_curves["ImDiffusion"] = scores
+        print(f"    votes per timestep: 0..{im_details['n_votes']}  "
+              f"(steps kept: {im_details['keep']})")
+        print(f"    xi chosen by best-F1: {m['threshold']:g} votes  -> "
+              f"{float((scores >= m['threshold']).mean()) * 100:.2f}% of the "
+              f"series labelled anomalous")
+
     # ---- report ------------------------------------------------------------
     df = pd.DataFrame(rows)
     cols = ["model", "f1", "precision", "recall", "f1_pa", "roc_auc", "pr_auc",
-            "params", "train_s", "infer_s"]
+            "threshold", "params", "train_s", "infer_s"]
     df = df[cols]
     pd.set_option("display.float_format", lambda v: f"{v:.4f}")
     print("\n===== RESULTS =====")
     print(df.to_string(index=False))
 
-    import os
     os.makedirs(args.out, exist_ok=True)
     tag = cfg.data.name if cfg.data.name == "synthetic" else f"smd_{args.entity}"
-    df.to_csv(os.path.join(args.out, f"results_{tag}.csv"), index=False)
-    with open(os.path.join(args.out, f"results_{tag}.md"), "w") as f:
-        f.write(f"# Results ({tag})\n\n")
-        f.write(f"device={device}, window={L}, epochs={cfg.train.epochs}, "
-                f"diffusion T={cfg.diff.T}, infer_steps={cfg.diff.infer_steps}\n\n")
-        f.write(to_markdown_table(df.round(4)))
-        f.write("\n")
-    print(f"\nsaved -> {args.out}/results_{tag}.csv / .md")
+
+    def _write_md(p):
+        with open(p, "w") as f:
+            f.write(f"# Results ({tag})\n\n")
+            f.write(f"device={device}, window={L}, epochs={cfg.train.epochs}, "
+                    f"diffusion T={cfg.diff.T}, infer_steps={cfg.diff.infer_steps}\n\n")
+            f.write(to_markdown_table(df.round(4)))
+            f.write("\n")
+
+    csv_path = safe_write(os.path.join(args.out, f"results_{tag}.csv"),
+                          lambda p: df.to_csv(p, index=False))
+    md_path = safe_write(os.path.join(args.out, f"results_{tag}.md"), _write_md)
+    print(f"\nsaved -> {csv_path}\nsaved -> {md_path}")
+
+    # ---- figures -----------------------------------------------------------
+    try:
+        import plots
+        safe_write(os.path.join(args.out, f"roc_{tag}.png"),
+                   lambda p: plots.plot_roc(score_curves, labels, p))
+        safe_write(os.path.join(args.out, f"pr_{tag}.png"),
+                   lambda p: plots.plot_pr(score_curves, labels, p))
+        print(f"saved -> {args.out}/roc_{tag}.png / pr_{tag}.png")
+        if im_details is not None:
+            xi = float(df.loc[df.model == "ImDiffusion", "threshold"].iloc[0])
+            feat = plots.plot_imdiff_score(im_details, test_series, labels,
+                                           os.path.join(args.out,
+                                                        f"imdiff_score_{tag}.png"))
+            plots.plot_imdiff_ensemble(im_details, test_series, labels,
+                                       os.path.join(args.out,
+                                                    f"imdiff_ensemble_{tag}.png"),
+                                       xi=xi, feat=feat)
+            print(f"saved -> {args.out}/imdiff_score_{tag}.png / "
+                  f"imdiff_ensemble_{tag}.png")
+    except Exception as e:
+        print(f"(figures skipped: {type(e).__name__}: {e})")
 
     # optional score plot for the best model by PR-AUC
     try:
@@ -180,8 +253,9 @@ def main():
         ax.set_title(f"Anomaly score vs ground truth ({best})")
         ax.legend(loc="upper right")
         fig.tight_layout()
-        fig.savefig(os.path.join(args.out, f"scores_{tag}.png"), dpi=120)
-        print(f"saved -> {args.out}/scores_{tag}.png")
+        png = safe_write(os.path.join(args.out, f"scores_{tag}.png"),
+                         lambda p: fig.savefig(p, dpi=120))
+        print(f"saved -> {png}")
     except Exception as e:
         print(f"(plot skipped: {e})")
 

@@ -16,3 +16,12 @@ data/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Session transcript export (not project code)
+chat_export.*
+
+# Office lock/temp files
+~$*
+
+# Presentation (kept local)
+Presentation/

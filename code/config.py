@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 
 @dataclass
 class DataConfig:
-    name: str = "synthetic"        # "synthetic" or "smd"
+    name: str = "smd"              # "synthetic" or "smd"
     smd_root: str = "../data/SMD"  # only used when name == "smd"
     smd_entity: str = "machine-1-1"
     window: int = 64               # sliding window length L
@@ -40,8 +40,36 @@ class DiffusionConfig:
 
 
 @dataclass
+class ImConfig:
+    """Faithful ImDiffusion (Chen et al., 2023) settings. Defaults follow the
+    paper/official repo (config/base.yaml); shrink them for CPU smoke runs."""
+    window: int = 100          # paper detection window
+    split: int = 10            # grating blocks -> 5 masked + 5 unmasked (paper Table 1)
+    channels: int = 64
+    layers: int = 4
+    nheads: int = 8
+    diff_emb: int = 128
+    feature_emb: int = 16
+    time_emb: int = 128
+    T: int = 50
+    beta_start: float = 1e-4
+    beta_end: float = 0.5      # quad schedule
+    ensemble_steps: int = 30   # keep the LAST 30 denoising steps ...
+    ensemble_stride: int = 3   # ... every 3rd -> range(0,30,3) = 10 votes
+                               # (paper Sec 4.5 / ensemble_proper: "sample every 3
+                               #  steps from the last 30 denoising steps". The
+                               #  reverse loop always runs all T=50 steps; these
+                               #  two only choose which ones cast a vote.)
+    last_step_threshold: float = 0.02  # tau_T in the adaptive per-step threshold
+    unconditional: bool = True # paper Sec 4.1: the observed region is fed as its
+                               # forward NOISE, not its clean values. The official
+                              # repo runs this way (exe_machine: unconditional_list
+                               # = [True]) even though base.yaml defaults to 0.
+
+
+@dataclass
 class TrainConfig:
-    epochs: int = 8
+    epochs: int = 2
     batch_size: int = 64
     lr: float = 1e-3
     weight_decay: float = 0.0
@@ -53,4 +81,5 @@ class Config:
     data: DataConfig = field(default_factory=DataConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     diff: DiffusionConfig = field(default_factory=DiffusionConfig)
+    im: ImConfig = field(default_factory=ImConfig)
     train: TrainConfig = field(default_factory=TrainConfig)
