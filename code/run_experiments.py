@@ -29,6 +29,8 @@ from utils import set_seed, make_windows, windows_to_series, evaluate_scores, co
 from diffusion import build_diffusion
 from baselines import LSTMVAE
 from imdiffusion import ImDiffusion, train_imdiffusion, score_imdiffusion
+from anomalyfilter import (AnomalyFilter, train_anomalyfilter,
+                           score_anomalyfilter)
 
 SCORE_BATCH = 256
 
@@ -105,6 +107,8 @@ def main():
     ap.add_argument("--im-cpu", action="store_true",
                     help="shrink ImDiffusion to a CPU-tractable size (defaults are paper-exact)")
     ap.add_argument("--no-imdiff", action="store_true", help="skip the ImDiffusion model")
+    ap.add_argument("--no-anomalyfilter", action="store_true",
+                    help="skip the AnomalyFilter model")
     ap.add_argument("--out", default="../results")
     args = ap.parse_args()
 
@@ -128,6 +132,8 @@ def main():
         cfg.im.window, cfg.im.split = 32, 8
         cfg.im.channels, cfg.im.layers = 16, 1
         cfg.im.T, cfg.im.ensemble_steps = 12, 12
+        cfg.af.window, cfg.af.channels, cfg.af.layers = 32, 16, 1
+        cfg.af.T = cfg.af.reverse_steps = 12
     device = "cuda" if torch.cuda.is_available() else "cpu"
     cfg.train.device = device
     set_seed(cfg.data.seed)
@@ -146,6 +152,7 @@ def main():
 
     rows = []
     score_curves = {}
+    im_details = None          # per-step ImDiffusion diagnostics, when it runs
 
     # ---- LSTM-VAE baseline -------------------------------------------------
     print("\n[LSTM-VAE]")
@@ -159,9 +166,10 @@ def main():
                      train_s=tt, infer_s=it, **m))
     score_curves["LSTM-VAE"] = scores
 
-    # ---- shared-backbone diffusion regimes --------------------------------
-    # (masking is now the faithful ImDiffusion below, per its own method)
-    for mode in ["vanilla", "selective"]:
+    # ---- plain DDPM baseline ----------------------------------------------
+    # (masking -> the faithful ImDiffusion below; selective -> AnomalyFilter,
+    #  both reproduced from their own papers rather than as backbone variants)
+    for mode in ["vanilla"]:
         name = f"DDPM-{mode}"
         print(f"\n[{name}]")
         diff = build_diffusion(mode, D, cfg).to(device)
@@ -174,6 +182,18 @@ def main():
         rows.append(dict(model=name, params=count_params(diff),
                          train_s=tt, infer_s=it, **m))
         score_curves[name] = scores
+
+    # ---- AnomalyFilter (faithful: masked Gaussian noise + noiseless inference)
+    if not args.no_anomalyfilter:
+        print("\n[AnomalyFilter]  (masked Gaussian noise + noiseless inference)")
+        af = AnomalyFilter(D, cfg, device=device).to(device)
+        tt = train_anomalyfilter(af, train_series, cfg, device)
+        af.eval()
+        scores, it = score_anomalyfilter(af, test_series, cfg, device)
+        m = evaluate_scores(scores, labels)
+        rows.append(dict(model="AnomalyFilter", params=count_params(af),
+                         train_s=tt, infer_s=it, **m))
+        score_curves["AnomalyFilter"] = scores
 
     # ---- ImDiffusion (faithful: grating mask + CSDI + vote ensemble) -------
     if not args.no_imdiff:

@@ -19,7 +19,8 @@ from sklearn.metrics import (roc_curve, roc_auc_score,
 from utils import windows_to_series
 
 COLORS = {"LSTM-VAE": "#4C72B0", "DDPM-vanilla": "#DD8452",
-          "DDPM-selective": "#55A868", "ImDiffusion": "#C44E52"}
+          "AnomalyFilter": "#55A868", "DDPM-selective": "#55A868",
+          "ImDiffusion": "#C44E52"}
 
 
 def _c(name, i=0):

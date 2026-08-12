@@ -68,8 +68,26 @@ class ImConfig:
 
 
 @dataclass
+class AFConfig:
+    """Faithful AnomalyFilter (Obata et al., 2026) settings -- paper Table 5.
+    N=4 / C=32 are the paper's own SMD values (reduced from 8/64 for memory)."""
+    window: int = 100          # detection window, all datasets
+    channels: int = 32         # latent dimension C
+    layers: int = 4            # number of residual blocks N
+    nheads: int = 8            # attention heads
+    diff_emb: int = 128
+    feature_emb: int = 16
+    time_emb: int = 128
+    T: int = 50                # forward diffusion step
+    reverse_steps: int = 50    # lambda -- reverse diffusion step
+    beta_start: float = 1e-4
+    beta_end: float = 0.01     # LINEAR schedule (not quad, unlike ImDiffusion)
+    mask_p: float = 0.5        # Bernoulli parameter p of the masked Gaussian noise
+
+
+@dataclass
 class TrainConfig:
-    epochs: int = 2
+    epochs: int = 10
     batch_size: int = 64
     lr: float = 1e-3
     weight_decay: float = 0.0
@@ -82,4 +100,5 @@ class Config:
     model: ModelConfig = field(default_factory=ModelConfig)
     diff: DiffusionConfig = field(default_factory=DiffusionConfig)
     im: ImConfig = field(default_factory=ImConfig)
+    af: AFConfig = field(default_factory=AFConfig)
     train: TrainConfig = field(default_factory=TrainConfig)
