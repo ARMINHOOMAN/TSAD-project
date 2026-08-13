@@ -1,13 +1,4 @@
 """Figures for the results folder.
-
-  roc_<tag>.png       ROC curves, every model + the random-classifier diagonal
-  pr_<tag>.png        Precision-Recall curves, every model + the random baseline
-  imdiff_score_<tag>.png    imputation vs ground truth + vote score over the series
-  imdiff_ensemble_<tag>.png per-denoising-step residual, threshold and vote
-                            (the paper's Fig. 8)
-
-Everything here is read-only w.r.t. the models: it consumes the score arrays and
-the diagnostics dict that score_imdiffusion() returns.
 """
 import numpy as np
 import matplotlib
@@ -28,7 +19,7 @@ def _c(name, i=0):
 
 
 # --------------------------------------------------------------------------
-# 1 + 2.  ROC and PR, all models against the random baseline
+# ROC and PR
 # --------------------------------------------------------------------------
 def plot_roc(score_curves, labels, path):
     fig, ax = plt.subplots(figsize=(6.4, 5.8))
@@ -99,13 +90,6 @@ def _shade(ax, labels, lo, hi, first_label=True):
 
 
 def _pick_window(labels, width=300):
-    """A narrow slice straddling the ONSET of an anomaly, so the panel shows
-    normal behaviour (white) running into the anomaly (light red).
-
-    Centring on a segment's midpoint is wrong for SMD: its segments run to 721
-    steps, so any window narrower than that lands wholly inside the anomaly and
-    the figure has no normal baseline to compare against.
-    """
     seg = _segments(labels)
     if not seg:
         return 0, min(width, len(labels))
@@ -118,9 +102,6 @@ def _pick_window(labels, width=300):
 
 
 def _pick_feature(series, labels):
-    """The most legible channel to draw: the one whose values separate anomalous
-    from normal periods most strongly. Labels are used for readability of the
-    figure only -- nothing in the detector sees this."""
     a = labels > 0.5
     if a.all() or not a.any():
         return int(np.argmax(series.std(axis=0)))
@@ -134,12 +115,12 @@ def _fold_feature(imp_s, starts, T_total, L, feat):
 
 
 # --------------------------------------------------------------------------
-# 3.  imputation vs ground truth, and the vote score over the whole test set
+# imputation vs ground truth
 # --------------------------------------------------------------------------
 def plot_imdiff_score(details, test_series, labels, path, feat=None):
     T_total = len(labels)
     keep, L = details["keep"], details["L"]
-    final = min(keep)                                   # t = 0, fully denoised
+    final = min(keep)                                   
     imp = details["imp"][final]
     starts = details["starts"]
 
@@ -155,9 +136,7 @@ def plot_imdiff_score(details, test_series, labels, path, feat=None):
     fig, axes = plt.subplots(2, 1, figsize=(12, 6.4),
                              gridspec_kw=dict(height_ratios=[1, 1]))
 
-    # series and imputation share the left axis; the error lives on its own
-    # right axis -- summed-squared error is orders of magnitude larger and
-    # would otherwise flatten both lines onto zero.
+
     ax = axes[0]
     t = np.arange(lo, hi)
     l1, = ax.plot(t, x[lo:hi], lw=1.0, color="#4C72B0", label="time series")
@@ -192,7 +171,7 @@ def plot_imdiff_score(details, test_series, labels, path, feat=None):
 
 
 # --------------------------------------------------------------------------
-# 4.  ensemble inference: one panel per denoising step (paper Fig. 8)
+# ensemble inference: one panel per denoising step
 # --------------------------------------------------------------------------
 def plot_imdiff_ensemble(details, test_series, labels, path, xi=None,
                          feat=0, width=300):
@@ -202,9 +181,6 @@ def plot_imdiff_ensemble(details, test_series, labels, path, xi=None,
     lo, hi = _pick_window(labels, width)
     t = np.arange(lo, hi)
 
-    # All of `keep` votes; the figure shows only the FIRST voting step (noisiest)
-    # and the LAST (fully denoised), so the panel stays readable. Reverse order =
-    # most-noisy first, matching the paper's "denoising step" numbering.
     ordered = sorted(keep, reverse=True)
     steps = [ordered[0], ordered[-1]] if len(ordered) > 1 else ordered
     n = len(steps)
@@ -256,7 +232,7 @@ def plot_imdiff_ensemble(details, test_series, labels, path, xi=None,
                  f"of {details['n_votes']} (feature {feat})", fontsize=11, y=.995)
     fig.legend(handles=handles, loc="upper center", ncol=5, fontsize=8,
                frameon=False, bbox_to_anchor=(.5, .965))
-    top = 1.0 - (0.72 / fig.get_figheight())     # room for title + legend
+    top = 1.0 - (0.72 / fig.get_figheight())    
     fig.tight_layout(rect=[0, 0, 1, top])
     fig.savefig(path, dpi=150)
     plt.close(fig)

@@ -22,7 +22,7 @@ from backbone import Denoiser
 
 def build_diffusion(mode, n_features, cfg):
     D = n_features
-    in_dim = 3 * D if mode == "masking" else D   # masking feeds [x_t, cond, mask]
+    in_dim = 3 * D if mode == "masking" else D 
     m = cfg.model
     model = Denoiser(in_dim, D, d_model=m.d_model, n_heads=m.n_heads,
                      n_layers=m.n_layers, ff_dim=m.ff_dim, dropout=m.dropout,
@@ -41,10 +41,7 @@ class GaussianDiffusion(nn.Module):
         self.infer_steps = d.infer_steps
         self.mask_ratio = d.mask_ratio
         self.K = d.n_impute_masks
-        self.n_score_samples = 2          # average a couple of draws to cut variance
-        # Each noise design needs its own starting corruption level. Selective
-        # denoising in particular must start from a *small* level -- it edits the
-        # raw instance without adding noise, so a large start inverts the score.
+        self.n_score_samples = 2 
         frac = {"vanilla": 0.6, "masking": 0.5, "selective": 0.3}[mode]
         self.t_start = max(1, int(frac * d.T))
 
@@ -69,7 +66,6 @@ class GaussianDiffusion(nn.Module):
             inp, target, lmask = x_t, noise, torch.ones_like(x0)
 
         elif self.mode == "masking":
-            # random subset of timesteps become imputation targets
             obs = (torch.rand(B, L, 1, device=dev) > 0.3).float()
             x_noised = self.q_sample(x0, t, noise)
             x_t = obs * x0 + (1 - obs) * x_noised
@@ -77,7 +73,6 @@ class GaussianDiffusion(nn.Module):
             target, lmask = noise, (1 - obs).expand(-1, -1, D)
 
         elif self.mode == "selective":
-            # only a fraction of elements get noise; rest stay clean
             nmask = (torch.rand_like(x0) < self.mask_ratio).float()
             x_noised = self.q_sample(x0, t, noise)
             x_t = (1 - nmask) * x0 + nmask * x_noised
@@ -109,7 +104,6 @@ class GaussianDiffusion(nn.Module):
         seq = self._infer_seq()
 
         if self.mode == "vanilla":
-            # partial diffusion: corrupt to t_start, then DDIM-denoise back
             x_t = self.q_sample(x0, torch.full((B,), seq[0], device=dev),
                                 torch.randn_like(x0))
             x0_pred = x_t
@@ -121,10 +115,7 @@ class GaussianDiffusion(nn.Module):
             return x0_pred
 
         if self.mode == "selective":
-            # no noise added: iteratively pull the raw instance toward the normal
-            # manifold at a fixed moderate level. Normal parts sit still; anomalous
-            # parts (which look like removable noise) get dragged, so |x - x_hat|
-            # localises the anomaly.
+            # anomalous parts (which look like removable noise) get dragged, so |x - x_hat|
             t = torch.full((B,), self.t_start, device=dev)
             x_t = x0.clone()
             for _ in range(self.infer_steps):
@@ -132,7 +123,7 @@ class GaussianDiffusion(nn.Module):
                 x_t = self._x0_from_eps(x_t, self.t_start, eps)
             return x_t
 
-        # masking: tile K interleaved temporal masks so every step is imputed once
+        # masking
         pos = torch.arange(L, device=dev)
         recon = torch.zeros_like(x0)
         count = torch.zeros(B, L, 1, device=dev)
@@ -147,7 +138,7 @@ class GaussianDiffusion(nn.Module):
                 eps = self.model(inp, torch.full((B,), tc, device=dev))
                 x0_pred = self._x0_from_eps(x_t, tc, eps)
                 x_prev = self._ddim_step(x0_pred, eps, tn)
-                x_t = obs * x0 + (1 - obs) * x_prev     # keep observed fixed
+                x_t = obs * x0 + (1 - obs) * x_prev
             recon += (1 - obs) * x0_pred
             count += (1 - obs)
         count = torch.clamp(count, min=1.0)
@@ -162,4 +153,4 @@ class GaussianDiffusion(nn.Module):
         for _ in range(n):
             recon = self.reconstruct(x0)
             acc = acc + (x0 - recon) ** 2
-        return (acc / n).mean(dim=-1)                 # (B, L)
+        return (acc / n).mean(dim=-1)

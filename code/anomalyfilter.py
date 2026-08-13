@@ -1,40 +1,9 @@
-"""Faithful reimplementation of AnomalyFilter (Obata et al., 2026).
+"""Implementation of AnomalyFilter (Obata et al., 2026).
 
-    "Selective Denoising Diffusion Model for Time Series Anomaly Detection"
-    repo: github.com/KoheiObata/AnomalyFilter
+The method is two components that only work together:
 
-This replaces the earlier hand-rolled "selective" mode in diffusion.py, which
-approximated the idea with the project's shared Transformer denoiser. The paper
-builds on CSDI -- the same backbone ImDiffusion uses -- so `DiffCSDI` is imported
-from imdiffusion.py unchanged and reused here.
-
-The method is two components that only work together (paper Tables 2 and 3):
-
-  * Masked Gaussian noise (Alg. 3, Eq. 9)
-        eps_t = B o zeta,   zeta ~ N(0, I),   B_{k,l} ~ Bernoulli(p)
-        X_t   = sqrt(abar_t) X_0 + sqrt(1 - abar_t) eps_t
-    Only a fraction p of elements receive noise. The target is eps_t itself, so
-    on masked elements the model is trained to predict ZERO -- i.e. to pass the
-    input through untouched. Eq. (10) splits the loss accordingly:
-        L = L_NonMask (denoise)  +  L_Mask (retain)
-
-  * Noiseless inference (Alg. 4, Eqs. 11-12)
-        X_lambda = sqrt(abar_lambda) X_0          <- scaled, NOT noised
-        X_{t-1}  = 1/sqrt(a_t) ( X_t - beta_t/sqrt(1-abar_t) eps_theta(X_t, t) )
-    No noise at initialisation and none at any reverse step. The raw instance is
-    handed to the model, which passes normal parts through and filters anomalous
-    ones, so |x - x_hat| localises the anomaly.
-
-Hyperparameters follow Table 5, using the paper's own SMD setting (N=4, C=32,
-reduced from 8/64 for memory). Note beta is a LINEAR schedule ending at 0.01 --
-ImDiffusion uses a quad schedule ending at 0.5, a genuinely different corruption.
-
-Deviations, all documented:
-  * DiffCSDI carries a mask-index embedding for ImDiffusion's grating strategy.
-    AnomalyFilter has no such notion, so a constant index 0 is passed; the
-    embedding degenerates to a learned bias and the architecture is otherwise
-    identical to the paper's Figure 2.
-  * inputs are the project's shared z-scored windows, as for every other model.
+  * Masked Gaussian noise
+  * Noiseless inference
 """
 import time
 
@@ -42,7 +11,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from imdiffusion import DiffCSDI          # unmodified CSDI backbone
+from imdiffusion import DiffCSDI
 from utils import make_windows, windows_to_series
 
 
@@ -53,25 +22,23 @@ class AnomalyFilter(nn.Module):
         self.K = n_features
         self.L = c.window
         self.T = c.T
-        self.lam = min(c.reverse_steps, c.T)      # lambda <= T
+        self.lam = min(c.reverse_steps, c.T)
         self.p = c.mask_p
         self.time_emb, self.feat_emb = c.time_emb, c.feature_emb
 
-        # Figure 2: side info is time + feature embedding only -- no conditional
-        # mask channel, and the data enters as a single channel.
         side_dim = c.time_emb + c.feature_emb
         self.embed_layer = nn.Embedding(n_features, c.feature_emb)
         self.diffmodel = DiffCSDI(side_dim, c.channels, c.layers, c.nheads,
                                   c.diff_emb, c.T, inputdim=1)
 
-        beta = np.linspace(c.beta_start, c.beta_end, c.T)      # LINEAR (Table 5)
+        beta = np.linspace(c.beta_start, c.beta_end, c.T)
         self.beta = beta
-        self.alpha_hat = 1 - beta                  # per-step alpha
-        self.alpha = np.cumprod(self.alpha_hat)    # alpha_bar
+        self.alpha_hat = 1 - beta
+        self.alpha = np.cumprod(self.alpha_hat)
         self.register_buffer("alpha_torch",
                              torch.tensor(self.alpha).float().unsqueeze(1).unsqueeze(1))
 
-    # -- side information (CSDI) ---------------------------------------------
+    # -- (CSDI) ---------------------------------------------
     def _time_embedding(self, L, device):
         pos = torch.arange(L, device=device).float().unsqueeze(0)
         pe = torch.zeros(1, L, self.time_emb, device=device)
@@ -85,21 +52,18 @@ class AnomalyFilter(nn.Module):
         te = self._time_embedding(self.L, device).unsqueeze(2).expand(B, -1, self.K, -1)
         fe = self.embed_layer(torch.arange(self.K, device=device))
         fe = fe.unsqueeze(0).unsqueeze(0).expand(B, self.L, -1, -1)
-        return torch.cat([te, fe], dim=-1).permute(0, 3, 2, 1)      # (B,*,K,L)
+        return torch.cat([te, fe], dim=-1).permute(0, 3, 2, 1)
 
     def _strat(self, B, device):
-        # AnomalyFilter has no mask index; DiffCSDI expects one, so hold it fixed.
         return torch.zeros(B, device=device, dtype=torch.long)
 
-    # -- masked Gaussian noise, Eq. (9) --------------------------------------
+    # -- masked Gaussian noise --------------------------------------
     def masked_noise(self, x0):
         zeta = torch.randn_like(x0)
-        # B_{k,l} ~ Bernoulli(p), element-wise over BOTH feature and time
-        # (repo create_mask 'bernoulli_p' reshapes a (B, K*L) draw back to (B,K,L))
         bern = (torch.rand_like(x0) < self.p).float()
         return bern * zeta
 
-    # -- training loss, Algorithm 3 ------------------------------------------
+    # -- training loss ------------------------------------------
     def loss(self, x0):
         B = x0.shape[0]
         device = x0.device
@@ -109,8 +73,6 @@ class AnomalyFilter(nn.Module):
         xt = abar.sqrt() * x0 + (1 - abar).sqrt() * eps
         pred = self.diffmodel(xt.unsqueeze(1), self.side_info(B, device), t,
                               self._strat(B, device))
-        # repo uses nn.L1Loss over ALL elements: masked positions have target 0,
-        # which is exactly the L_Mask "retain" term of Eq. (10).
         return (eps - pred).abs().mean()
 
     # -- noiseless inference, Algorithm 4 ------------------------------------
@@ -121,7 +83,6 @@ class AnomalyFilter(nn.Module):
         side = self.side_info(B, device)
         strat = self._strat(B, device)
 
-        # Eq. (11): scale the raw instance, add NO noise
         xhat = float(self.alpha[self.lam - 1] ** 0.5) * x0
 
         for t in range(self.lam - 1, -1, -1):
@@ -130,7 +91,6 @@ class AnomalyFilter(nn.Module):
             c1 = 1 / self.alpha_hat[t] ** 0.5
             c2 = self.beta[t] / (1 - self.alpha[t]) ** 0.5
             xhat = c1 * (xhat - c2 * eps)
-            # Eq. (12): no sigma * z term at any step -- this is the whole point
         return xhat
 
 
@@ -138,13 +98,6 @@ class AnomalyFilter(nn.Module):
 # Training + scoring
 # --------------------------------------------------------------------------
 def train_anomalyfilter(model, train_series, cfg, device):
-    """AdamW, lr 1e-3, batch 64, for a fixed cfg.train.epochs.
-
-    Deviation from the paper: it holds out 10% of the training windows as
-    validation and early-stops on them. That is dropped here so AnomalyFilter
-    trains on every window for exactly the same number of epochs as the other
-    models, keeping the cost columns comparable.
-    """
     L = model.L
     windows, _ = make_windows(train_series, L, cfg.data.stride)
     ds = torch.from_numpy(windows)
@@ -175,20 +128,20 @@ def score_anomalyfilter(model, test_series, cfg, device):
     with a moving average of half the window (repo: np.convolve, half_window=50)."""
     L = model.L
     T_total = len(test_series)
-    windows, starts = make_windows(test_series, L, L)      # non-overlapping
+    windows, starts = make_windows(test_series, L, L)
     ds = torch.from_numpy(windows).to(device)
 
     t0 = time.time()
     errs = []
     for i in range(0, len(ds), cfg.train.batch_size):
-        xb = ds[i:i + cfg.train.batch_size].permute(0, 2, 1)          # (b,K,L)
+        xb = ds[i:i + cfg.train.batch_size].permute(0, 2, 1)        
         recon = model.reconstruct(xb)
-        errs.append(((xb - recon) ** 2).sum(dim=1).cpu().numpy())     # sum feats
+        errs.append(((xb - recon) ** 2).sum(dim=1).cpu().numpy()) 
     infer_time = time.time() - t0
 
-    win_scores = np.concatenate(errs, axis=0)                          # (n, L)
+    win_scores = np.concatenate(errs, axis=0)                       
     score = windows_to_series(win_scores, starts, T_total, L)
 
-    hw = max(1, L // 2)                    # half the window, as in the repo
+    hw = max(1, L // 2)          
     score = np.convolve(score, np.ones(hw) / hw, mode="same")
     return score.astype(np.float64), infer_time

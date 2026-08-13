@@ -121,7 +121,7 @@ def main():
         cfg.diff.infer_steps = args.infer_steps
     if args.epochs:
         cfg.train.epochs = args.epochs
-    if args.im_cpu:                      # CPU-tractable ImDiffusion (not paper-exact)
+    if args.im_cpu:                    
         cfg.im.window, cfg.im.split = 64, 8
         cfg.im.channels, cfg.im.layers = 32, 2
         cfg.im.T, cfg.im.ensemble_steps = 25, 24
@@ -152,7 +152,7 @@ def main():
 
     rows = []
     score_curves = {}
-    im_details = None          # per-step ImDiffusion diagnostics, when it runs
+    im_details = None 
 
     # ---- LSTM-VAE baseline -------------------------------------------------
     print("\n[LSTM-VAE]")
@@ -167,8 +167,7 @@ def main():
     score_curves["LSTM-VAE"] = scores
 
     # ---- plain DDPM baseline ----------------------------------------------
-    # (masking -> the faithful ImDiffusion below; selective -> AnomalyFilter,
-    #  both reproduced from their own papers rather than as backbone variants)
+    # (masking -> ImDiffusion below; selective -> AnomalyFilter,
     for mode in ["vanilla"]:
         name = f"DDPM-{mode}"
         print(f"\n[{name}]")
@@ -183,7 +182,7 @@ def main():
                          train_s=tt, infer_s=it, **m))
         score_curves[name] = scores
 
-    # ---- AnomalyFilter (faithful: masked Gaussian noise + noiseless inference)
+    # ---- AnomalyFilter (masked Gaussian noise + noiseless inference)
     if not args.no_anomalyfilter:
         print("\n[AnomalyFilter]  (masked Gaussian noise + noiseless inference)")
         af = AnomalyFilter(D, cfg, device=device).to(device)
@@ -195,7 +194,7 @@ def main():
                          train_s=tt, infer_s=it, **m))
         score_curves["AnomalyFilter"] = scores
 
-    # ---- ImDiffusion (faithful: grating mask + CSDI + vote ensemble) -------
+    # ---- ImDiffusion (grating mask + CSDI + vote ensemble) -------
     if not args.no_imdiff:
         print("\n[ImDiffusion]  (grating mask + CSDI backbone + vote ensemble)")
         im = ImDiffusion(D, cfg, device=device).to(device)
@@ -213,7 +212,7 @@ def main():
               f"{float((scores >= m['threshold']).mean()) * 100:.2f}% of the "
               f"series labelled anomalous")
 
-    # ---- report ------------------------------------------------------------
+    # ---- report generation ------------------------------------------------------------
     df = pd.DataFrame(rows)
     cols = ["model", "f1", "precision", "recall", "f1_pa", "roc_auc", "pr_auc",
             "threshold", "params", "train_s", "infer_s"]
@@ -260,7 +259,6 @@ def main():
     except Exception as e:
         print(f"(figures skipped: {type(e).__name__}: {e})")
 
-    # optional score plot for the best model by PR-AUC
     try:
         import matplotlib
         matplotlib.use("Agg")

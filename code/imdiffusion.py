@@ -1,33 +1,11 @@
-"""Faithful reimplementation of ImDiffusion (Chen et al., VLDB 2023).
+"""Implementation of ImDiffusion (Chen et al., VLDB 2023).
 
-Ported from the official repo (github.com/17000cyh/IMDiffusion): the CSDI
-backbone (diff_models.py), the grating mask + conditional training/sampling
-(main_model.py, dataset.py), and the step-wise vote-ensemble anomaly score
-(ensemble_proper.py). Unlike the three shared-backbone variants in diffusion.py,
-this is ImDiffusion's *own* method end to end:
-
-  * grating mask  : window split into blocks; two complementary strategies p=0/p=1
+  * grating mask  : window split into blocks
   * backbone      : CSDI = per-block temporal + feature transformers, with a
                     mask-index (strategy) embedding
-  * diffusion     : T steps, quad beta schedule, UNCONDITIONAL (the observed
-                    region is fed as its forward noise eps^{M1}, never as clean
-                    values -- paper Sec 4.1); loss on target region only
-  * anomaly score : ancestral sampling captures denoising steps; for the last
-                    ~10 steps compute residual = sum_feat (impute - x)^2 (Alg. 1),
-                    an adaptive top-k threshold per step (Eq. 12), then VOTE.
-
-Deviations (documented honestly):
-  * inputs are the project's shared z-scored windows (so every model sees
-    identical data) instead of the repo's raw *20 scaling;
-  * the vote count V_l is exposed as a continuous score instead of being cut at
-    a fixed xi -- sweeping a threshold over V_l is equivalent to the paper's
-    search over xi, and keeps ROC-AUC / PR-AUC comparable across models;
-  * training masks with the grating strategy itself. The official repo hard-codes
-    a random 70% mask during training (main_model.forward sets target_strategy =
-    "random") and only applies the grating mask at inference.
-  * tau_T is the paper's fixed 0.02; the repo re-tunes it per SMD entity against
-    the labels (score/SMD/infor.csv). With a 0.02 budget each voting step may
-    flag at most 2% of timesteps, which caps recall on high-anomaly-rate entities.
+  * diffusion     : T steps, quad beta schedule
+  * anomaly score : ancestral sampling captures denoising steps for the last
+                    ~10 steps compute residual = sum_feat, then VOTE.
 """
 import math
 import numpy as np
@@ -173,12 +151,12 @@ class ImDiffusion(nn.Module):
 
         beta = np.linspace(c.beta_start ** 0.5, c.beta_end ** 0.5, c.T) ** 2   # quad
         self.beta = beta
-        self.alpha_hat = 1 - beta                       # per-step
-        self.alpha = np.cumprod(self.alpha_hat)         # cumulative (alpha_bar)
+        self.alpha_hat = 1 - beta
+        self.alpha = np.cumprod(self.alpha_hat)
         self.register_buffer("alpha_torch",
                              torch.tensor(self.alpha).float().unsqueeze(1).unsqueeze(1))
 
-    # -- grating mask (dataset.py get_mask); returns observed(=condition) mask --
+    # -- grating mask (dataset.py get_mask) --
     def grating_mask(self, B, strategy, device):
         m = torch.zeros(self.L, device=device)
         skip = max(1, self.L // self.split)
@@ -189,34 +167,31 @@ class ImDiffusion(nn.Module):
         return m.view(1, 1, self.L).expand(B, self.K, self.L).contiguous()
 
     def _time_embedding(self, L, device):
-        pos = torch.arange(L, device=device).float().unsqueeze(0)          # (1,L)
+        pos = torch.arange(L, device=device).float().unsqueeze(0)
         pe = torch.zeros(1, L, self.time_emb, device=device)
         div = 1 / torch.pow(10000.0, torch.arange(0, self.time_emb, 2, device=device) / self.time_emb)
         pe[:, :, 0::2] = torch.sin(pos.unsqueeze(2) * div)
         pe[:, :, 1::2] = torch.cos(pos.unsqueeze(2) * div)
-        return pe                                                          # (1,L,emb)
+        return pe 
 
     def side_info(self, B, cond_mask):
         device = cond_mask.device
         te = self._time_embedding(self.L, device).unsqueeze(2).expand(B, -1, self.K, -1)
         fe = self.embed_layer(torch.arange(self.K, device=device))
         fe = fe.unsqueeze(0).unsqueeze(0).expand(B, self.L, -1, -1)
-        info = torch.cat([te, fe], dim=-1).permute(0, 3, 2, 1)             # (B,*,K,L)
-        if not self.uncond:          # conditional only: append the mask channel
+        info = torch.cat([te, fe], dim=-1).permute(0, 3, 2, 1) 
+        if not self.uncond: 
             info = torch.cat([info, cond_mask.unsqueeze(1)], dim=1)
         return info
 
     def _model_input(self, noisy, x0, cond_mask):
         if self.uncond:
-            # Unconditional (paper Sec 4.1, Eq. 11): the whole window is noised and
-            # fed as one channel -- the clean observed values are never revealed.
-            # The mask enters only through the loss region.
-            return noisy.unsqueeze(1)                                      # (B,1,K,L)
+            return noisy.unsqueeze(1) 
         cond_obs = (cond_mask * x0).unsqueeze(1)
         noisy_target = ((1 - cond_mask) * noisy).unsqueeze(1)
-        return torch.cat([cond_obs, noisy_target], dim=1)                  # (B,2,K,L)
+        return torch.cat([cond_obs, noisy_target], dim=1)
 
-    # -- training loss (calc_loss): predict noise on target region only ------
+    # -- training loss ------
     def loss(self, x0, strategy):
         B = x0.shape[0]
         device = x0.device
@@ -228,11 +203,11 @@ class ImDiffusion(nn.Module):
         inp = self._model_input(noisy, x0, cond_mask)
         strat = torch.full((B,), strategy, device=device, dtype=torch.long)
         pred = self.diffmodel(inp, self.side_info(B, cond_mask), t, strat)
-        target_mask = 1 - cond_mask                       # observed_mask(=1) - cond
+        target_mask = 1 - cond_mask
         resid = (noise - pred) * target_mask
         return (resid ** 2).sum() / target_mask.sum().clamp(min=1)
 
-    # -- ancestral sampling, capturing chosen denoising steps (impute) -------
+    # -- ancestral sampling -------
     @torch.no_grad()
     def impute_middle(self, x0, strategy, keep_steps):
         B = x0.shape[0]
@@ -242,10 +217,6 @@ class ImDiffusion(nn.Module):
         strat = torch.full((B,), strategy, device=device, dtype=torch.long)
 
         if self.uncond:
-            # eps^{M1}_{1:T}: run the observed region through the forward chain and
-            # keep the whole trajectory. This noise -- not the clean values -- is the
-            # reference the denoiser sees, so unmasked anomalies stay hidden
-            # (paper Sec 4.1; main_model.impute noisy_cond_history).
             noisy_obs = x0
             noisy_hist = []
             for t in range(self.T):
@@ -260,7 +231,7 @@ class ImDiffusion(nn.Module):
         for t in range(self.T - 1, -1, -1):
             if self.uncond:
                 inp = (cond_mask * noisy_hist[t]
-                       + (1 - cond_mask) * sample).unsqueeze(1)            # (B,1,K,L)
+                       + (1 - cond_mask) * sample).unsqueeze(1)
             else:
                 noisy_target = ((1 - cond_mask) * sample).unsqueeze(1)
                 inp = torch.cat([cond_obs, noisy_target], dim=1)
@@ -273,7 +244,6 @@ class ImDiffusion(nn.Module):
                 sigma = ((1.0 - self.alpha[t - 1]) / (1.0 - self.alpha[t]) * self.beta[t]) ** 0.5
                 sample = sample + sigma * torch.randn_like(sample)
             if t in keep_steps:
-                # keep only the target region's imputation; observed stays as x0
                 middle[t] = (cond_mask * x0 + (1 - cond_mask) * sample).detach().clone()
         return middle, cond_mask
 
@@ -293,9 +263,9 @@ def train_imdiffusion(model, train_series, cfg, device):
         perm = torch.randperm(len(ds))
         running, nb = 0.0, 0
         for i in range(0, len(ds), cfg.train.batch_size):
-            xb = ds[perm[i:i + cfg.train.batch_size]].to(device)   # (B,L,K)
-            xb = xb.permute(0, 2, 1)                               # (B,K,L)
-            strategy = 0 if torch.rand(1).item() < 0.5 else 1      # random grating per batch
+            xb = ds[perm[i:i + cfg.train.batch_size]].to(device)
+            xb = xb.permute(0, 2, 1)
+            strategy = 0 if torch.rand(1).item() < 0.5 else 1
             loss = model.loss(xb, strategy)
             opt.zero_grad(); loss.backward(); opt.step()
             running += loss.item(); nb += 1
@@ -317,64 +287,48 @@ def score_imdiffusion(model, test_series, cfg, device, return_details=False):
     T_total = len(test_series)
     c = cfg.im
     keep = [s for s in range(0, c.ensemble_steps, c.ensemble_stride) if s < model.T]
-    # non-overlapping windows so every timestep is a target in exactly one strategy
     windows, starts = make_windows(test_series, L, L)
     ds = torch.from_numpy(windows).to(device)
     B_all = len(ds)
 
     t0 = time.time()
-    # per ensemble-step, per strategy: gather target-region imputations per window
-    # imp[step] -> array (num_windows, L, K) holding imputed values (target region)
     imp = {s: np.zeros((B_all, L, model.K), dtype=np.float32) for s in keep}
-    # which timesteps in each window were targets (per strategy) -> to place values
     for strategy in (0, 1):
-        cm = model.grating_mask(1, strategy, device)[0, 0].cpu().numpy()   # (L,) observed
-        target_pos = cm < 0.5                                              # True where imputed
+        cm = model.grating_mask(1, strategy, device)[0, 0].cpu().numpy()
+        target_pos = cm < 0.5
         for i in range(0, B_all, cfg.train.batch_size):
-            xb = ds[i:i + cfg.train.batch_size].permute(0, 2, 1)          # (b,K,L)
+            xb = ds[i:i + cfg.train.batch_size].permute(0, 2, 1)
             middle, _ = model.impute_middle(xb, strategy, set(keep))
             for s in keep:
-                m = middle[s].permute(0, 2, 1).cpu().numpy()              # (b,L,K)
-                # only fill the target timesteps for this strategy
+                m = middle[s].permute(0, 2, 1).cpu().numpy()
                 imp[s][i:i + xb.shape[0]][:, target_pos, :] = m[:, target_pos, :]
     infer_time = time.time() - t0
 
-    # Residual per step, paper Algorithm 1 line 7:  E_t = ||X - X_{t-1}||^2,
-    # i.e. the SQUARED error summed over features (the repo also offers an L1
-    # variant; the paper's algorithm specifies the squared norm, so we use it for
-    # both the per-timestep residual and the per-step average that rescales tau).
-    x_win = windows  # (num_windows, L, K)
-    step_resid = {}          # step -> per-timestep residual folded to full series
+    x_win = windows
+    step_resid = {}
     avgE = {}
     for s in keep:
-        r_win = ((imp[s] - x_win) ** 2).sum(axis=-1)                       # (num_windows, L)
-        step_resid[s] = windows_to_series(r_win, starts, T_total, L)      # (T,)
-        avgE[s] = float(r_win.mean())              # compute_average_residual
+        r_win = ((imp[s] - x_win) ** 2).sum(axis=-1)
+        step_resid[s] = windows_to_series(r_win, starts, T_total, L) 
+        avgE[s] = float(r_win.mean())
 
-    # Ensemble, paper Eq. (12):  Y_t = 1(E_t >= tau_t),  tau_t = (sum E_T / sum E_t) * tau_T
-    # tau_T is an upper *percentile*, so the per-step threshold is a top-k cut whose
-    # budget shrinks when that step's imputation is poor.
     N = T_total
-    e0 = avgE[keep[0]]                             # step 0 = fully denoised = E_T
+    e0 = avgE[keep[0]]
     votes = np.zeros(N, dtype=np.float32)
     step_thr, step_pred = {}, {}
     for s in keep:
         proper = e0 * c.last_step_threshold / max(avgE[s], 1e-12)
         k = max(int(proper * N), 1)
         r = step_resid[s]
-        thr = np.partition(r, N - k)[N - k]        # k-th largest value
-        y = (r >= thr).astype(np.float32)          # Eq. (12) uses >=
+        thr = np.partition(r, N - k)[N - k]
+        y = (r >= thr).astype(np.float32)
         votes += y
         step_thr[s], step_pred[s] = float(thr), y
 
-    # V_l = sum_t y_{t,l}; the paper's final label is y_l = 1(V_l > xi) with xi
-    # selected per dataset (repo: searched over range(0, n_votes)). We return V_l
-    # itself -- sweeping a threshold over this integer score IS the search over xi,
-    # and it also lets the same ROC-AUC / PR-AUC metrics apply as to every other model.
     if return_details:
         details = dict(keep=keep, votes=votes, step_resid=step_resid,
                        step_thr=step_thr, step_pred=step_pred, avgE=avgE,
                        imp=imp, windows=windows, starts=starts, L=L, T=model.T,
                        n_votes=len(keep))
         return votes, infer_time, details
-    return votes, infer_time                        # vote count in [0, len(keep)] per timestep
+    return votes, infer_time
