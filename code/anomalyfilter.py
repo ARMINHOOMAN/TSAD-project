@@ -1,7 +1,6 @@
 """Implementation of AnomalyFilter (Obata et al., 2026).
 
 The method is two components that only work together:
-
   * Masked Gaussian noise
   * Noiseless inference
 """

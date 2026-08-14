@@ -18,7 +18,7 @@ def make_windows(x: np.ndarray, L: int, stride: int):
     """(T, D) -> (N, L, D) plus the start index of each window."""
     T = x.shape[0]
     starts = list(range(0, max(1, T - L + 1), stride))
-    if starts[-1] != T - L:            # make sure the tail is covered
+    if starts[-1] != T - L:
         starts.append(T - L)
     windows = np.stack([x[s:s + L] for s in starts], axis=0)
     return windows.astype(np.float32), np.array(starts)
@@ -79,7 +79,7 @@ def _prf1(pred, label):
 
 
 def _best_f1_from_preds(score, label, adjust=False):
-    best = (0.0, 0.0, 0.0, float(score.min()))  # f1, precision, recall, thr
+    best = (0.0, 0.0, 0.0, float(score.min()))
     for thr in _candidate_thresholds(score):
         pred = (score >= thr).astype(int)
         if adjust:

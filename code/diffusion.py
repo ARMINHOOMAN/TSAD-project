@@ -1,12 +1,12 @@
 """DDPM for time-series anomaly detection with three interchangeable noise
-designs -- this is the "explanatory variable" the study isolates:
+designs, this is the "explanatory variable" the study isolates:
 
   * "vanilla"   -- plain DDPM. Score by partial diffusion: noise the window to a
                    middle timestep, denoise back, compare (AnoDDPM-style).
   * "masking"   -- conditional imputation (ImDiffusion / DiffAD / CSDI-style):
                    observe part of the window, impute the rest, compare.
   * "selective" -- selective denoising (AnomalyFilter / Obata-style): mask the
-                   Gaussian noise during training and, at inference, denoise the
+                   Gaussian noise during training and at inference, denoise the
                    *raw* instance without adding noise, so the model mostly edits
                    anomalous regions and leaves normal ones intact.
 
@@ -115,7 +115,6 @@ class GaussianDiffusion(nn.Module):
             return x0_pred
 
         if self.mode == "selective":
-            # anomalous parts (which look like removable noise) get dragged, so |x - x_hat|
             t = torch.full((B,), self.t_start, device=dev)
             x_t = x0.clone()
             for _ in range(self.infer_steps):

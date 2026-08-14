@@ -1,16 +1,6 @@
 """Data loading + a synthetic multivariate generator.
-
 Two sources are supported:
-
-  * "synthetic" -- generated on the fly. The training split is *guaranteed*
-    anomaly-free (that is the whole point: it demonstrates the normality
-    assumption cleanly and lets the pipeline run without any download).
-  * "smd"       -- the Server Machine Dataset (OmniAnomaly release). Its train
-    split is a curated normal-operation period, so training data are mostly
-    normal by construction; the test split carries point-level anomaly labels.
-
-Both return the same tuple: (train_series, test_series, test_labels), where the
-series are (T, D) float arrays and labels are (T,) in {0,1}.
+  * "smd" -- the Server Machine Dataset (OmniAnomaly release).
 """
 import os
 import numpy as np
@@ -28,12 +18,11 @@ def generate_synthetic(n_features=10, train_len=6000, test_len=3000,
 
     def base(T):
         t = np.arange(T)
-        # a few shared latent oscillators so features are inter-correlated
         n_latent = 3
         freqs = rng.uniform(0.01, 0.05, size=n_latent)
         phases = rng.uniform(0, 2 * np.pi, size=n_latent)
         latents = np.stack([np.sin(2 * np.pi * f * t + p)
-                            for f, p in zip(freqs, phases)], axis=1)  # (T, n_latent)
+                            for f, p in zip(freqs, phases)], axis=1)
         mix = rng.normal(size=(n_latent, n_features))
         x = latents @ mix
         x += 0.15 * rng.normal(size=(T, n_features))
@@ -47,14 +36,14 @@ def generate_synthetic(n_features=10, train_len=6000, test_len=3000,
     placed = 0
     while placed < n_anom:
         start = rng.integers(50, test_len - 50)
-        seg = rng.integers(5, 25)                 # short contextual anomalies
+        seg = rng.integers(5, 25)        
         dims = rng.choice(n_features, size=rng.integers(1, n_features), replace=False)
         kind = rng.integers(0, 3)
-        if kind == 0:                             # spike
+        if kind == 0:           
             test[start:start + seg][:, dims] += rng.normal(4, 1, size=(seg, len(dims)))
-        elif kind == 1:                           # level shift
+        elif kind == 1:                   
             test[start:start + seg][:, dims] += rng.uniform(2, 4)
-        else:                                     # frequency burst
+        else:                               
             tt = np.arange(seg)
             test[start:start + seg][:, dims] += 3 * np.sin(2 * np.pi * 0.4 * tt)[:, None]
         labels[start:start + seg] = 1

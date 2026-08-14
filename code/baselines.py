@@ -1,7 +1,4 @@
 """Reconstruction baselines. LSTM-VAE is fully implemented as the encoder-decoder
-reference from the proposal. BeatGAN (adversarial) is kept as an optional
-extension -- adversarial training is finicky on CPU and is not needed for the
-core noise-design comparison the TA asked us to focus on first.
 """
 import torch
 import torch.nn as nn
@@ -21,13 +18,13 @@ class LSTMVAE(nn.Module):
     def forward(self, x):
         B, L, D = x.shape
         _, (h, _) = self.enc(x)
-        h = h[-1]                              # (B, hidden)
+        h = h[-1]                       
         mu, logvar = self.to_mu(h), self.to_logvar(h)
         std = torch.exp(0.5 * logvar)
         z = mu + std * torch.randn_like(std)
         h0 = self.from_z(z)[None].expand(1, B, -1).contiguous()
         c0 = torch.zeros_like(h0)
-        seq = h0[-1][:, None, :].expand(B, L, -1)   # feed latent at every step
+        seq = h0[-1][:, None, :].expand(B, L, -1)  
         dec_out, _ = self.dec(seq, (h0, c0))
         return self.out(dec_out), mu, logvar
 
@@ -40,4 +37,4 @@ class LSTMVAE(nn.Module):
     @torch.no_grad()
     def score_windows(self, x):
         recon, _, _ = self(x)
-        return ((x - recon) ** 2).mean(dim=-1)      # (B, L)
+        return ((x - recon) ** 2).mean(dim=-1)  

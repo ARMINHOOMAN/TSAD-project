@@ -1,11 +1,4 @@
 """Transformer denoiser used by all three diffusion regimes.
-
-It is a temporal Transformer that operates on a window (B, L, in_dim) and
-predicts an output of width D (the noise / eps for that window). Inter-variable
-dependencies are captured through the shared d_model projection and attention.
-A full feature-axis (2D) attention a la CSDI is left as an optional extension;
-the temporal version keeps things fast enough for CPU while still being
-"temporal-feature" aware through the mixing projections.
 """
 import math
 import torch
@@ -13,7 +6,6 @@ import torch.nn as nn
 
 
 class SinusoidalEmbedding(nn.Module):
-    """Standard sinusoidal embedding for the diffusion step t."""
     def __init__(self, dim):
         super().__init__()
         self.dim = dim
@@ -49,6 +41,6 @@ class Denoiser(nn.Module):
         # x: (B, L, in_dim), t: (B,)
         L = x.size(1)
         h = self.in_proj(x) + self.pos[:, :L]
-        h = h + self.t_embed(t)[:, None, :]        # broadcast step embedding over time
+        h = h + self.t_embed(t)[:, None, :]
         h = self.encoder(h)
         return self.out(h)

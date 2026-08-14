@@ -167,7 +167,6 @@ def main():
     score_curves["LSTM-VAE"] = scores
 
     # ---- plain DDPM baseline ----------------------------------------------
-    # (masking -> ImDiffusion below; selective -> AnomalyFilter,
     for mode in ["vanilla"]:
         name = f"DDPM-{mode}"
         print(f"\n[{name}]")

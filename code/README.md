@@ -1,17 +1,15 @@
-
-
 ## 1. What we build (the core comparison)
 
 Two shared-backbone diffusion regimes (isolating **noise design** as the single
 explanatory variable) plus one encoder–decoder baseline, and — reproduced
 faithfully from its own paper — **ImDiffusion** as the masking/imputation method:
 
-| Model | Family | Noise design / idea | Paper it follows |
-|---|---|---|---|
-| **LSTM-VAE** | encoder–decoder baseline | reconstruct window, KL-regularised latent | Park et al. 2018 |
-| **DDPM-vanilla** | diffusion baseline | full Gaussian noising; partial-diffusion reconstruction | Ho et al. 2020 / AnoDDPM |
-| **DDPM-selective** | selective denoising | mask the noise in training; **denoise the raw instance** at test time | Obata et al. 2026 (AnomalyFilter) |
-| **ImDiffusion** | conditional imputation (**exact**) | grating mask + CSDI backbone + step-wise **vote ensemble** | Chen et al. 2023 (ImDiffusion) [1] |
+| Model              | Family                             | Noise design / idea                                                   | Paper it follows                   |
+| ------------------ | ---------------------------------- | --------------------------------------------------------------------- | ---------------------------------- |
+| **LSTM-VAE**       | encoder–decoder baseline           | reconstruct window, KL-regularised latent                             | Park et al. 2018                   |
+| **DDPM-vanilla**   | diffusion baseline                 | full Gaussian noising; partial-diffusion reconstruction               | Ho et al. 2020 / AnoDDPM           |
+| **DDPM-selective** | selective denoising                | mask the noise in training; **denoise the raw instance** at test time | Obata et al. 2026 (AnomalyFilter)  |
+| **ImDiffusion**    | conditional imputation (**exact**) | grating mask + CSDI backbone + step-wise **vote ensemble**            | Chen et al. 2023 (ImDiffusion) [1] |
 
 `DDPM-vanilla` and `DDPM-selective` share the same Transformer denoiser, window,
 normalisation, schedule and DDIM sampler, so their difference comes only from the
@@ -19,29 +17,29 @@ noise design. **ImDiffusion is deliberately different** — it is the paper's ow
 method end to end (its own CSDI backbone and scoring), not a shared-backbone
 variant; see §5.1.
 
-
 ## 2. Dataset & the normality assumption
 
 We use the **Server Machine Dataset (SMD)** — 5 weeks of 38-dimensional server
 telemetry from a large internet company (OmniAnomaly release). It is a standard
 multivariate TSAD benchmark, it is lightweight (plain text, a few MB/entity, no
-images), and — crucially — it answers *"how do you ensure training is mostly
-normal?"*:
+images), and — crucially — it answers _"how do you ensure training is mostly
+normal?"_:
 
 - SMD ships a **dedicated train/test split**. The **train** split is a curated
   **normal-operation** period (no labelled anomalies), and the **test** split
-  carries **point-level anomaly labels**. So the normality assumption holds *by
-  construction of the benchmark* — we train only on the normal split and never
+  carries **point-level anomaly labels**. So the normality assumption holds _by
+  construction of the benchmark_ — we train only on the normal split and never
   touch test labels during training.
 - Normalisation statistics (z-score) are fit on the **train** split only, so no
   test information leaks in.
 
 A **synthetic generator** (`data.py`) is also included so the whole pipeline runs
-with zero downloads. Its train split is *guaranteed* anomaly-free, which
+with zero downloads. Its train split is _guaranteed_ anomaly-free, which
 demonstrates the normality assumption in the cleanest possible way; the test
 split contains injected spikes, level shifts and frequency bursts with labels.
 
 To fetch one real SMD entity:
+
 ```bash
 BASE=https://raw.githubusercontent.com/NetManAIOps/OmniAnomaly/master/ServerMachineDataset
 for s in train test test_label; do
@@ -58,7 +56,7 @@ onto the series (averaging windows that cover each timestep):
   between the input window and its (denoised / imputed) reconstruction.
 - **Detection quality**: best **F1** (threshold picked on the score's own
   quantiles), plus **point-adjusted F1** (`f1_pa`, the common but score-inflating
-  TSAD convention — reported *alongside*, not instead of, the raw F1), and the
+  TSAD convention — reported _alongside_, not instead of, the raw F1), and the
   threshold-free **ROC-AUC** and **PR-AUC** (PR-AUC matters under the heavy class
   imbalance typical of TSAD).
 - **Cost**: trainable **parameter count**,
@@ -73,6 +71,7 @@ python run_experiments.py                    # synthetic, full smoke run
 python run_experiments.py --quick            # tiny + fast sanity check
 python run_experiments.py --dataset smd --entity machine-1-1 --epochs 10 --test-stride 5
 ```
+
 Outputs land in `../results/`: a `results_<tag>.csv`, a `results_<tag>.md`, and a
 score-vs-ground-truth plot `scores_<tag>.png`.
 
@@ -84,21 +83,11 @@ ordering**, not final tuned scores. `DDPM-*` use the shared small Transformer;
 channels 32, 2 layers). Its **paper-exact defaults** (window 100, T 50, channels
 64, 4 layers, grating split 10) are in `config.py` but need a GPU.
 
-### Synthetic (10 features, 15 epochs)
-| model | F1 | precision | recall | F1 (PA) | ROC-AUC | PR-AUC | params | train_s | infer_s |
-|---|---|---|---|---|---|---|---|---|---|
-| LSTM-VAE | 0.663 | 0.956 | 0.508 | 0.929 | 0.879 | 0.636 | 56.5k | 3.2 | 0.15 |
-| DDPM-vanilla | 0.446 | 0.566 | 0.367 | 0.838 | 0.832 | 0.435 | 80.8k | 16.8 | 8.9 |
-| DDPM-selective | 0.486 | 0.830 | 0.344 | 0.895 | 0.834 | 0.478 | 80.8k | 17.6 | 4.7 |
-| ImDiffusion | 0.555 | 0.716 | 0.453 | 0.918 | 0.724 | 0.416 | 112.4k | 298.5 | 9.1 |
-
-*On smooth periodic synthetic data the LSTM-VAE reconstructs normal patterns very
-well and is hard to beat. ImDiffusion has the best raw F1 among the diffusion
-methods, at ~17× the training cost (the CSDI dual-transformer backbone).*
-
 ### 5.1 ImDiffusion — exact reproduction (and honest deviations)
+
 `imdiffusion.py` reproduces ImDiffusion (Chen et al. 2023) from the official repo,
 **not** the shared-backbone approximation used earlier:
+
 - **Grating mask** — the window is split into blocks; strategy `p=0` observes the
   even blocks and imputes the odd, `p=1` the complement; the two passes cover
   every point (`dataset.py:get_mask`).
@@ -120,9 +109,11 @@ into the same ROC-AUC/PR-AUC/best-F1 metrics; (iii) our runs use the
 paper's.
 
 ### SMD `machine-1-1` (38 features, 8 epochs, test-stride 5)
+
 _(populated from `results/results_smd_machine-1-1.md` — ImDiffusion at `--im-cpu`)_
 
 ### How the results map to the three research questions
+
 1. **Can a diffusion model trained on normal data find anomalies?** Yes — high
    ROC-AUC on SMD from training on the normal split only.
 2. **How does the denoising / conditioning strategy shape the gap?** It matters and
@@ -134,6 +125,7 @@ _(populated from `results/results_smd_machine-1-1.md` — ImDiffusion at `--im-c
    models on synthetic), which is central to the efficiency question.
 
 ## 6. Repo layout
+
 ```
 code/
   config.py          # all hyper-parameters (incl. paper-exact ImDiffusion defaults)
@@ -145,3 +137,15 @@ code/
   utils.py           # windowing + metrics (P/R/F1, PA-F1, ROC/PR-AUC)
   run_experiments.py # trains everything, writes the results + cost table
 ```
+
+## 7. References
+
+1. **ImDiffusion: Imputed Diffusion Models for Multivariate Time Series Anomaly Detection** — Chen et al., 2023, _Proc. VLDB Endow._
+2. **Imputation-based Time-Series Anomaly Detection with Conditional Weight-Incremental Diffusion Models** — Xiao et al., 2023, _KDD_
+3. **Selective Denoising Diffusion Model for Time Series Anomaly Detection** — Obata et al., 2026, _arXiv_
+4. **AnoDDPM: Anomaly Detection with Denoising Diffusion Probabilistic Models using Simplex Noise** — Wyatt et al., 2022, _CVPRW_
+5. **Time Series Anomaly Detection using Diffusion-based Models** — Pintilie et al., 2023, _ICDMW_
+6. **Anomaly Detection for Telemetry Time Series Using a Denoising Diffusion Probabilistic Model** — Sui et al., 2024, _IEEE Sensors Journal_
+7. **Unsupervised Anomaly Detection for Multivariate Time Series Using Diffusion Model** — Hu et al., 2024, _ICASSP_
+8. **LSTM-Based VAE-GAN for Time-Series Anomaly Detection** — Niu et al., 2020, _Sensors_
+9. **Reconstruction-Based Methods for Multivariate Time Series Anomaly Detection: A Review and Taxonomy** — Errachidi et al., 2025
