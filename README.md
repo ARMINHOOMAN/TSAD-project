@@ -2,7 +2,7 @@
 
 ## 1. What we build (the core comparison)
 
-The study isolates **noise design** as the single explanatory variable. One shared
+The study isolates **noise design** as the single explanatory variable. Two Tronsformes
 Transformer denoiser is trained on **normal** windows and reused across three
 diffusion regimes, plus one encoder–decoder baseline:
 
