@@ -31,10 +31,6 @@ normal?"_:
 - Normalisation statistics (z-score) are fit on the **train** split only, so no
   test information leaks in.
 
-A **synthetic generator** (`data.py`) is also included so the whole pipeline runs
-with zero downloads. Its train split is _guaranteed_ as anomaly free, which
-shows the normality assumption in the best possible way; the test
-split contains spikes, level shifts and frequency bursts with labels.
 
 To fetch one real SMD entity:
 
