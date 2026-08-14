@@ -87,13 +87,6 @@ Reported metrics:
 | point-adjusted F1 (`f1_pa`) |  a whole segment counts as detected if one point in it is flagged |
 | ROC-AUC, PR-AUC | the only metrics free of threshold selection |
 
-Two caveats are central to the study and are discussed at length in the report:
-
-1. The best-F1 threshold is selected **using the test labels**, so F1, precision
-   and recall are upper bounds attainable only by an oracle. ROC-AUC and PR-AUC
-   involve no threshold and are reported first for that reason.
-2. On this entity the point-adjusted F1 is nearly saturated — a **random detector
-   reaches 0.968** — so it carries almost no information.
 
 ---
 
@@ -124,30 +117,7 @@ python run_experiments.py --out ../results
 # fast sanity check with tiny models
 python run_experiments.py --quick
 
-# synthetic data instead of SMD
-python run_experiments.py --dataset synthetic
 ```
-
-On Windows, `RUN.bat` performs the `cd` for you.
-
-### Command-line options
-
-| Flag | Default | Meaning |
-|---|---|---|
-| `--dataset` | `smd` | `smd` or `synthetic` |
-| `--entity` | `machine-1-1` | SMD entity to load |
-| `--epochs` | from `config.py` | overrides the configured epoch count |
-| `--window` | from `config.py` | window length for the shared-backbone models |
-| `--infer-steps` | from `config.py` | DDIM steps used at scoring time |
-| `--test-stride` | `1` | stride between test windows |
-| `--quick` | off | tiny models, 2 epochs — for smoke-testing only |
-| `--im-cpu` | off | shrinks ImDiffusion below its paper size |
-| `--no-imdiff` | off | skip ImDiffusion |
-| `--no-anomalyfilter` | off | skip DDPM-selective |
-| `--out` | `../results` | output directory |
-
-Hyperparameters that are not exposed as flags live in `config.py`, one dataclass
-per model.
 
 ### Outputs
 
