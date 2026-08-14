@@ -36,9 +36,6 @@ SCORE_BATCH = 256
 
 
 def safe_write(path, write_fn):
-    """Write via write_fn(path), falling back to a timestamped name if the target
-    is locked. On Windows a results file left open in Excel raises PermissionError,
-    which would otherwise throw away a run that took minutes of GPU time."""
     try:
         write_fn(path)
         return path
@@ -52,7 +49,6 @@ def safe_write(path, write_fn):
 
 
 def to_markdown_table(df):
-    """Small dependency-free markdown table writer (avoids needing tabulate)."""
     cols = list(df.columns)
     head = "| " + " | ".join(cols) + " |"
     sep = "| " + " | ".join("---" for _ in cols) + " |"

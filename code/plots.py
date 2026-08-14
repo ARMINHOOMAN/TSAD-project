@@ -65,7 +65,6 @@ def plot_pr(score_curves, labels, path):
 # helpers
 # --------------------------------------------------------------------------
 def _segments(labels):
-    """[(start, end), ...] for each contiguous anomaly run."""
     seg, i, n = [], 0, len(labels)
     while i < n:
         if labels[i] > 0.5:
