@@ -44,7 +44,7 @@ from a large internet company (OmniAnomaly release). The experiments use dataset
 
 The train/test split of SMD are as below:
 
-- the **train** split is a curated normal-operation period with no labelled
+- the **train** split is a curated normal operation period with no labelled
   anomalies, and is the only data the models ever see during training;
 - the **test** split carries point-level labels: 28,479 timesteps of which 2,694
   (9.46 %) are anomalous, grouped into eight segments;
@@ -100,7 +100,7 @@ available; the reported runs used a single NVIDIA RTX 5070.
 
 ## 5. Usage
 
-All commands are run **from inside `code/`**, because the default data and output
+All commands are run from inside `code/`, because the default data and output
 paths are relative to that directory.
 
 ```bash
