@@ -1,147 +1,351 @@
+# Noise Design in Diffusion Models for Multivariate Time-Series Anomaly Detection
 
+Reference implementation and experimental study for the course project of the same
+name. Four unsupervised detectors are trained on the normal split of the **Server
+Machine Dataset (SMD)** and compared on the labelled test split, with the aim of
+separating two things that are usually conflated: how well a generative model
+captures normal behaviour, and how the resulting anomaly score is turned into a
+decision.
 
-## 1. What we build (the core comparison)
+The headline finding is that the **decision rule matters more than the generative
+model**. ImDiffusion learns the normal dynamics well and attains the highest
+precision of all four methods, yet finishes last on every aggregate metric,
+because its voting threshold can flag at most two per cent of the series while the
+test entity contains 9.46 per cent anomalies.
 
-Two shared-backbone diffusion regimes (isolating **noise design** as the single
-explanatory variable) plus one encoder–decoder baseline, and — reproduced
-faithfully from its own paper — **ImDiffusion** as the masking/imputation method:
+---
 
-| Model | Family | Noise design / idea | Paper it follows |
-|---|---|---|---|
-| **LSTM-VAE** | encoder–decoder baseline | reconstruct window, KL-regularised latent | Park et al. 2018 |
-| **DDPM-vanilla** | diffusion baseline | full Gaussian noising; partial-diffusion reconstruction | Ho et al. 2020 / AnoDDPM |
-| **DDPM-selective** | selective denoising | mask the noise in training; **denoise the raw instance** at test time | Obata et al. 2026 (AnomalyFilter) |
-| **ImDiffusion** | conditional imputation (**exact**) | grating mask + CSDI backbone + step-wise **vote ensemble** | Chen et al. 2023 (ImDiffusion) [1] |
+## Table of contents
 
-`DDPM-vanilla` and `DDPM-selective` share the same Transformer denoiser, window,
-normalisation, schedule and DDIM sampler, so their difference comes only from the
-noise design. **ImDiffusion is deliberately different** — it is the paper's own
-method end to end (its own CSDI backbone and scoring), not a shared-backbone
-variant; see §5.1.
+1. [Models](#1-models)
+2. [Dataset](#2-dataset)
+3. [Scoring and evaluation](#3-scoring-and-evaluation)
+4. [Installation](#4-installation)
+5. [Usage](#5-usage)
+6. [Results](#6-results)
+7. [Repository layout](#7-repository-layout)
+8. [Module dependencies](#8-module-dependencies)
+9. [References](#9-references)
 
+---
 
-## 2. Dataset & the normality assumption
+## 1. Models
 
-We use the **Server Machine Dataset (SMD)** — 5 weeks of 38-dimensional server
-telemetry from a large internet company (OmniAnomaly release). It is a standard
-multivariate TSAD benchmark, it is lightweight (plain text, a few MB/entity, no
-images), and — crucially — it answers *"how do you ensure training is mostly
-normal?"*:
+| Model | Family | Noise design / idea | Denoiser | Follows |
+|---|---|---|---|---|
+| **LSTM-VAE** | encoder–decoder baseline | reconstruct the window from a KL-regularised latent vector | LSTM encoder–decoder | [6] |
+| **DDPM-vanilla** | diffusion baseline | full Gaussian noising; partial-diffusion reconstruction | small Transformer | [3], [7] |
+| **DDPM-selective** | selective denoising | mask the *noise* during training with a Bernoulli mask; denoise the raw instance with **no noise added** at inference | **CSDI** | [2] |
+| **ImDiffusion** | imputation-based diffusion | grating mask hides part of the window; the rest conditions the model; step-wise **vote ensemble** over the reverse trajectory | **CSDI** | [1] |
 
-- SMD ships a **dedicated train/test split**. The **train** split is a curated
-  **normal-operation** period (no labelled anomalies), and the **test** split
-  carries **point-level anomaly labels**. So the normality assumption holds *by
-  construction of the benchmark* — we train only on the normal split and never
-  touch test labels during training.
-- Normalisation statistics (z-score) are fit on the **train** split only, so no
-  test information leaks in.
+**Backbones.** `DDPM-selective` and `ImDiffusion` are built on the *same* CSDI
+architecture [4] — four residual blocks, each combining a temporal Transformer
+layer and a feature Transformer layer. `anomalyfilter.py` imports `DiffCSDI`
+directly from `imdiffusion.py`, so the two methods are architecturally identical
+and differ only in their noise design and decision rule, which is what makes the
+comparison between them informative. `DDPM-vanilla` uses a **simpler Transformer
+denoiser** (`backbone.py`) and serves as a reference point for what a plain
+diffusion model achieves.
 
-A **synthetic generator** (`data.py`) is also included so the whole pipeline runs
-with zero downloads. Its train split is *guaranteed* anomaly-free, which
-demonstrates the normality assumption in the cleanest possible way; the test
-split contains injected spikes, level shifts and frequency bursts with labels.
+---
 
-To fetch one real SMD entity:
+## 2. Dataset
+
+**Server Machine Dataset (SMD)** — five weeks of 38-dimensional server telemetry
+from a large internet company (OmniAnomaly release). The experiments use entity
+`machine-1-1`.
+
+SMD ships a dedicated train/test split, which is what makes the normality
+assumption hold by construction:
+
+- the **train** split is a curated normal-operation period with no labelled
+  anomalies, and is the only data the models ever see during training;
+- the **test** split carries point-level labels: 28,479 timesteps of which 2,694
+  (9.46 %) are anomalous, grouped into eight segments;
+- z-score normalisation statistics are computed on the **train** split only, so no
+  test information leaks into training.
+
+A synthetic generator is also included (`data.py`) so the pipeline runs without
+any download; it is not used for the reported results.
+
+Download one entity:
+
 ```bash
 BASE=https://raw.githubusercontent.com/NetManAIOps/OmniAnomaly/master/ServerMachineDataset
 for s in train test test_label; do
-  curl -sSL --create-dirs -o ../data/SMD/$s/machine-1-1.txt $BASE/$s/machine-1-1.txt
+  curl -sSL --create-dirs -o data/SMD/$s/machine-1-1.txt $BASE/$s/machine-1-1.txt
 done
 ```
 
-## 3. How anomalies are scored
+---
 
-For every model we get a per-timestep score by folding overlapping windows back
-onto the series (averaging windows that cover each timestep):
+## 3. Scoring and evaluation
 
-- **VAE / vanilla / masking / selective** → mean-squared **reconstruction error**
-  between the input window and its (denoised / imputed) reconstruction.
-- **Detection quality**: best **F1** (threshold picked on the score's own
-  quantiles), plus **point-adjusted F1** (`f1_pa`, the common but score-inflating
-  TSAD convention — reported *alongside*, not instead of, the raw F1), and the
-  threshold-free **ROC-AUC** and **PR-AUC** (PR-AUC matters under the heavy class
-  imbalance typical of TSAD).
-- **Cost**: trainable **parameter count**,
-  **training wall-clock**, and **inference wall-clock**, all logged automatically.
+Every model produces one anomaly score per timestep by folding windowed scores
+back onto the series:
 
-## 4. Running it
+- **LSTM-VAE, DDPM-vanilla, DDPM-selective** — mean squared reconstruction error
+  between the input window and its reconstruction. `DDPM-selective` additionally
+  smooths the score with a moving average of half the window, following [2].
+- **ImDiffusion** — a **vote count**. At each retained denoising step a residual
+  is thresholded at an adaptive percentile `tau_t = (sum E_T / sum E_t) * tau_T`,
+  and the votes are summed over ten steps. The score is therefore an integer in
+  `0..10` rather than a continuous value.
+
+Reported metrics:
+
+| Metric | Threshold-free? | Note |
+|---|---|---|
+| best F1, precision, recall | no | threshold chosen by sweeping the score's own quantiles |
+| point-adjusted F1 (`f1_pa`) | no | a whole segment counts as detected if one point in it is flagged |
+| ROC-AUC, PR-AUC | **yes** | the only metrics free of threshold selection |
+
+Two caveats are central to the study and are discussed at length in the report:
+
+1. The best-F1 threshold is selected **using the test labels**, so F1, precision
+   and recall are upper bounds attainable only by an oracle. ROC-AUC and PR-AUC
+   involve no threshold and are reported first for that reason.
+2. On this entity the point-adjusted F1 is nearly saturated — a **random detector
+   reaches 0.968** — so it carries almost no information.
+
+---
+
+## 4. Installation
 
 ```bash
-pip install -r requirements.txt
-
-python run_experiments.py                    # synthetic, full smoke run
-python run_experiments.py --quick            # tiny + fast sanity check
-python run_experiments.py --dataset smd --entity machine-1-1 --epochs 10 --test-stride 5
+git clone https://github.com/ARMINHOOMAN/Anomaly-dtetection-diffusion-model.git
+cd Anomaly-dtetection-diffusion-model
+pip install -r code/requirements.txt
 ```
-Outputs land in `../results/`: a `results_<tag>.csv`, a `results_<tag>.md`, and a
-score-vs-ground-truth plot `scores_<tag>.png`.
 
-## 5. Results
+Requires Python 3.10+ and PyTorch. A CUDA GPU is used automatically when
+available; the reported runs used a single NVIDIA RTX 5070.
 
-Short CPU runs (reduced sizes) — numbers show the framework and the **relative
-ordering**, not final tuned scores. `DDPM-*` use the shared small Transformer;
-**ImDiffusion is run at a CPU-reduced config** (`--im-cpu`: window 64, T 25,
-channels 32, 2 layers). Its **paper-exact defaults** (window 100, T 50, channels
-64, 4 layers, grating split 10) are in `config.py` but need a GPU.
+---
 
-### Synthetic (10 features, 15 epochs)
-| model | F1 | precision | recall | F1 (PA) | ROC-AUC | PR-AUC | params | train_s | infer_s |
-|---|---|---|---|---|---|---|---|---|---|
-| LSTM-VAE | 0.663 | 0.956 | 0.508 | 0.929 | 0.879 | 0.636 | 56.5k | 3.2 | 0.15 |
-| DDPM-vanilla | 0.446 | 0.566 | 0.367 | 0.838 | 0.832 | 0.435 | 80.8k | 16.8 | 8.9 |
-| DDPM-selective | 0.486 | 0.830 | 0.344 | 0.895 | 0.834 | 0.478 | 80.8k | 17.6 | 4.7 |
-| ImDiffusion | 0.555 | 0.716 | 0.453 | 0.918 | 0.724 | 0.416 | 112.4k | 298.5 | 9.1 |
+## 5. Usage
 
-*On smooth periodic synthetic data the LSTM-VAE reconstructs normal patterns very
-well and is hard to beat. ImDiffusion has the best raw F1 among the diffusion
-methods, at ~17× the training cost (the CSDI dual-transformer backbone).*
+All commands are run **from inside `code/`**, because the default data and output
+paths are relative to that directory.
 
-### 5.1 ImDiffusion — exact reproduction (and honest deviations)
-`imdiffusion.py` reproduces ImDiffusion (Chen et al. 2023) from the official repo,
-**not** the shared-backbone approximation used earlier:
-- **Grating mask** — the window is split into blocks; strategy `p=0` observes the
-  even blocks and imputes the odd, `p=1` the complement; the two passes cover
-  every point (`dataset.py:get_mask`).
-- **CSDI backbone** — 4 residual blocks (paper default), each with a **temporal
-  transformer + a feature transformer**, plus diffusion-step and **mask-index**
-  embeddings; conditions on the clean observed region + noised target, loss on the
-  target region only; T=50, **quad** β-schedule (`diff_models.py`, `main_model.py`).
-- **Vote-ensemble score** — ancestral sampling captures the denoising trajectory;
-  for steps `range(0,30,3)` (10 votes) it computes residual `Σ_feat|impute−x|`, an
-  **adaptive top-k threshold** per step (`proper_i = avgE₀·τ_T/avgEᵢ`), and the
-  **vote count** across steps is the anomaly score (`ensemble_proper.py`).
+```bash
+cd code
 
-Deviations (documented, minor): (i) inputs use the project's shared **z-score**
-normalisation so every model sees identical data, instead of ImDiffusion's
-MinMax×20; (ii) the **vote count is exposed as a continuous score** so it plugs
-into the same ROC-AUC/PR-AUC/best-F1 metrics; (iii) our runs use the
-**CPU-reduced size** above — the paper-exact hyper-parameters are the defaults in
-`config.py`. The architecture, grating mask, diffusion and vote mechanism are the
-paper's.
+# full run: SMD machine-1-1, all four models (this reproduces the reported table)
+python run_experiments.py --out ../results
 
-### SMD `machine-1-1` (38 features, 8 epochs, test-stride 5)
-_(populated from `results/results_smd_machine-1-1.md` — ImDiffusion at `--im-cpu`)_
+# fast sanity check with tiny models
+python run_experiments.py --quick
 
-### How the results map to the three research questions
-1. **Can a diffusion model trained on normal data find anomalies?** Yes — high
-   ROC-AUC on SMD from training on the normal split only.
-2. **How does the denoising / conditioning strategy shape the gap?** It matters and
-   is dataset-dependent: partial-diffusion (vanilla), selective denoising, and
-   ImDiffusion's grating imputation each win on different axes (raw F1 vs recall vs
-   cost); on smooth synthetic data selective edges out vanilla.
-3. **Does the gain justify the cost?** The cost columns quantify it — ImDiffusion's
-   CSDI backbone is by far the most expensive to train (~17× the shared-backbone
-   models on synthetic), which is central to the efficiency question.
-
-## 6. Repo layout
+# synthetic data instead of SMD
+python run_experiments.py --dataset synthetic
 ```
-code/
-  config.py          # all hyper-parameters (incl. paper-exact ImDiffusion defaults)
-  data.py            # synthetic generator + SMD loader + windowing
-  backbone.py        # shared Transformer denoiser (vanilla/selective)
-  diffusion.py       # shared-backbone DDPM: vanilla + selective + DDIM scoring
-  imdiffusion.py     # faithful ImDiffusion: grating mask + CSDI + vote ensemble
-  baselines.py       # LSTM-VAE (BeatGAN = optional extension)
-  utils.py           # windowing + metrics (P/R/F1, PA-F1, ROC/PR-AUC)
-  run_experiments.py # trains everything, writes the results + cost table
+
+On Windows, `RUN.bat` performs the `cd` for you.
+
+### Command-line options
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--dataset` | `smd` | `smd` or `synthetic` |
+| `--entity` | `machine-1-1` | SMD entity to load |
+| `--epochs` | from `config.py` | overrides the configured epoch count |
+| `--window` | from `config.py` | window length for the shared-backbone models |
+| `--infer-steps` | from `config.py` | DDIM steps used at scoring time |
+| `--test-stride` | `1` | stride between test windows |
+| `--quick` | off | tiny models, 2 epochs — for smoke-testing only |
+| `--im-cpu` | off | shrinks ImDiffusion below its paper size |
+| `--no-imdiff` | off | skip ImDiffusion |
+| `--no-anomalyfilter` | off | skip DDPM-selective |
+| `--out` | `../results` | output directory |
+
+Hyperparameters that are not exposed as flags live in `config.py`, one dataclass
+per model.
+
+### Outputs
+
+Written to `--out`:
+
 ```
+results_smd_machine-1-1.csv      metrics table
+results_smd_machine-1-1.md       the same table in Markdown
+roc_smd_machine-1-1.png          ROC curves, all models + random baseline
+pr_smd_machine-1-1.png           precision-recall curves, all models + random baseline
+imdiff_score_smd_machine-1-1.png ImDiffusion imputation vs ground truth, and its vote score
+imdiff_ensemble_smd_machine-1-1.png  per-step thresholds and the final vote
+scores_smd_machine-1-1.png       anomaly score of the best model vs ground truth
+```
+
+If a target file is locked (for example open in Excel), the writer falls back to a
+timestamped filename instead of losing the run.
+
+---
+
+## 6. Results
+
+SMD `machine-1-1`, 38 features, 50 epochs. The random detector is included as a
+reference; its precision is pinned at the anomaly rate and its point-adjusted F1
+is almost saturated. Best value among the four models in **bold**.
+
+| Model | F1 | Precision | Recall | F1-PA | ROC-AUC | PR-AUC |
+|---|---|---|---|---|---|---|
+| LSTM-VAE | 0.607 | 0.589 | 0.625 | 0.998 | 0.896 | 0.567 |
+| DDPM-vanilla | 0.602 | 0.548 | 0.667 | **0.999** | 0.932 | 0.614 |
+| DDPM-selective | **0.658** | 0.547 | **0.826** | 0.998 | **0.957** | **0.691** |
+| ImDiffusion | 0.322 | **0.829** | 0.200 | 0.988 | 0.598 | 0.248 |
+| *Random detector* | *0.173* | *0.095* | *0.985* | *0.968* | *0.500* | *0.095* |
+
+**Selective denoising is the strongest method**, raising PR-AUC from 0.567 for the
+LSTM-VAE baseline to 0.691. Its advantage lies almost entirely in recall (0.826 vs
+0.625) at comparable precision, meaning it surfaces anomalies the baseline misses
+rather than sharpening ones it already finds. Both diffusion regimes with a
+continuous score beat the encoder–decoder baseline on the threshold-free metrics.
+
+**ImDiffusion is last on every aggregate measure yet has the highest precision.**
+This is a thresholding effect, not a training failure. Since the fully denoised
+step has the lowest average error, `tau_t <= tau_T` for every voting step; with
+the paper's `tau_T = 0.02` each step may flag at most 2 % of the series, about 570
+of 28,479 timesteps. The ten steps agree almost completely, so their union is only
+slightly larger: the selected operating point flags roughly 650 points (2.3 %).
+Against a 9.46 % anomaly rate, recall is therefore bounded near 650/2694 ≈ 0.24
+even if every flagged point were correct — and the measured 0.200 sits just under
+that bound. The imputations themselves are accurate on normal data, as the
+`imdiff_score` figure shows.
+
+---
+
+## 7. Repository layout
+
+```
+.
+├── code/
+│   ├── run_experiments.py   entry point: trains all models, evaluates, writes tables and figures
+│   ├── config.py            all hyperparameters, one dataclass per model
+│   ├── data.py              SMD loader, synthetic generator, z-score normalisation, windowing
+│   ├── utils.py             windowing, folding, metrics (P/R/F1, PA-F1, ROC-AUC, PR-AUC), seeding
+│   ├── backbone.py          simple Transformer denoiser used by DDPM-vanilla
+│   ├── diffusion.py         DDPM-vanilla: forward process, DDIM sampling, reconstruction score
+│   ├── baselines.py         LSTM-VAE
+│   ├── imdiffusion.py       ImDiffusion: CSDI backbone (DiffCSDI), grating mask, vote ensemble
+│   ├── anomalyfilter.py     DDPM-selective: masked Gaussian noise, noiseless inference
+│   ├── plots.py             ROC/PR curves and the ImDiffusion diagnostic figures
+│   ├── requirements.txt
+│   └── README.md            implementation notes and deviations from the original papers
+├── data/SMD/                train/, test/, test_label/ (downloaded separately, git-ignored)
+├── results/                 metrics tables and figures
+├── report/                  final report (LaTeX source, bibliography, figures)
+├── RUN.bat                  Windows launcher
+└── README.md
+```
+
+---
+
+## 8. Module dependencies
+
+Arrows point from a module to the modules it imports. `run_experiments.py` is the
+only entry point; everything else is a library.
+
+```
+                          run_experiments.py
+                                  │
+   ┌──────────┬──────────┬────────┼─────────┬──────────────┬──────────┐
+   │          │          │        │         │              │          │
+config.py  data.py   baselines.py │   diffusion.py   imdiffusion.py  plots.py
+              │                   │         │              │          │
+              │                   │    backbone.py         │          │
+              │                   │                        │          │
+              └───────────────────┴──── utils.py ──────────┴──────────┘
+                                        ▲
+                                        │
+                              anomalyfilter.py ──► imdiffusion.py (DiffCSDI)
+```
+
+| Module | Imports from the project | Provides | Consumed by |
+|---|---|---|---|
+| `config.py` | — | `Config` and the per-model dataclasses | every model, `run_experiments.py` |
+| `utils.py` | — | `make_windows`, `windows_to_series`, `evaluate_scores`, `point_adjust`, `count_params`, `set_seed` | `data.py`, `imdiffusion.py`, `anomalyfilter.py`, `plots.py`, `run_experiments.py` |
+| `backbone.py` | — | `Denoiser` (simple Transformer) | `diffusion.py` |
+| `baselines.py` | — | `LSTMVAE` | `run_experiments.py` |
+| `data.py` | `utils` | `get_data`, `WindowDataset` | `run_experiments.py` |
+| `diffusion.py` | `backbone` | `build_diffusion` → `GaussianDiffusion` | `run_experiments.py` |
+| `imdiffusion.py` | `utils` | `DiffCSDI`, `ImDiffusion`, `train_imdiffusion`, `score_imdiffusion` | `run_experiments.py`, **`anomalyfilter.py`** |
+| `anomalyfilter.py` | `imdiffusion`, `utils` | `AnomalyFilter`, `train_anomalyfilter`, `score_anomalyfilter` | `run_experiments.py` |
+| `plots.py` | `utils` | `plot_roc`, `plot_pr`, `plot_imdiff_score`, `plot_imdiff_ensemble` | `run_experiments.py` |
+
+**Prerequisites and data flow.** `config.py` and `utils.py` are leaf modules with
+no internal dependencies and must be importable before anything else. The one
+cross-model dependency worth knowing is that **`anomalyfilter.py` imports
+`DiffCSDI` from `imdiffusion.py`** — this is deliberate, and it is what guarantees
+that DDPM-selective and ImDiffusion share an identical backbone. Editing
+`imdiffusion.py` therefore changes both models.
+
+The runtime flow within `run_experiments.py` is:
+
+```
+config.Config
+   └─► data.get_data          →  (train_series, test_series, labels)   z-scored on train stats
+          └─► per model:  train_*(train_series)  →  score_*(test_series)  →  score per timestep
+                 └─► utils.evaluate_scores(score, labels)  →  metrics row
+                        └─► pandas table  →  CSV / Markdown
+                        └─► plots.*                        →  PNG figures
+```
+
+Each model exposes the same pair of functions — a trainer that consumes
+`train_series` and a scorer that consumes `test_series` and returns one score per
+timestep — so adding a model means implementing that pair and registering it in
+`run_experiments.py`.
+
+---
+
+## 9. References
+
+[1] Y. Chen, C. Zhang, M. Ma, Y. Liu, R. Ding, B. Li, S. He, S. Rajmohan, Q. Lin,
+and D. Zhang. "ImDiffusion: Imputed Diffusion Models for Multivariate Time Series
+Anomaly Detection." *Proceedings of the VLDB Endowment*, 17(3):359–372, 2023.
+
+[2] K. Obata, Z. Chen, Y. Matsubara, L. Zhu, and Y. Sakurai. "Selective Denoising
+Diffusion Model for Time Series Anomaly Detection." *arXiv preprint
+arXiv:2602.23662*, 2026.
+
+[3] J. Ho, A. Jain, and P. Abbeel. "Denoising Diffusion Probabilistic Models."
+*Advances in Neural Information Processing Systems*, 33:6840–6851, 2020.
+
+[4] Y. Tashiro, J. Song, Y. Song, and S. Ermon. "CSDI: Conditional Score-based
+Diffusion Models for Probabilistic Time Series Imputation." *Advances in Neural
+Information Processing Systems*, 34:24804–24816, 2021.
+
+[5] Y. Su, Y. Zhao, C. Niu, R. Liu, W. Sun, and D. Pei. "Robust Anomaly Detection
+for Multivariate Time Series through Stochastic Recurrent Neural Network." In
+*Proceedings of the 25th ACM SIGKDD International Conference on Knowledge
+Discovery & Data Mining*, pages 2828–2837, 2019.
+
+[6] D. Park, Y. Hoshi, and C. C. Kemp. "A Multimodal Anomaly Detector for
+Robot-Assisted Feeding Using an LSTM-Based Variational Autoencoder." *IEEE
+Robotics and Automation Letters*, 3(3):1544–1551, 2018.
+
+[7] J. Wyatt, A. Leach, S. M. Schmon, and C. G. Willcocks. "AnoDDPM: Anomaly
+Detection with Denoising Diffusion Probabilistic Models using Simplex Noise." In
+*Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition
+Workshops (CVPRW)*, pages 650–656, 2022.
+
+[8] J. Xu, H. Wu, J. Wang, and M. Long. "Anomaly Transformer: Time Series Anomaly
+Detection with Association Discrepancy." In *International Conference on Learning
+Representations*, 2022.
+
+[9] S. Tuli, G. Casale, and N. R. Jennings. "TranAD: Deep Transformer Networks for
+Anomaly Detection in Multivariate Time Series Data." *Proceedings of the VLDB
+Endowment*, 15(6):1201–1214, 2022.
+
+[10] S. Kim, K. Choi, H.-S. Choi, B. Lee, and S. Yoon. "Towards a Rigorous
+Evaluation of Time-Series Anomaly Detection." In *Proceedings of the AAAI
+Conference on Artificial Intelligence*, volume 36, pages 7194–7201, 2022.
+
+[11] J. Paparrizos, P. Boniol, T. Palpanas, R. S. Tsay, A. Elmore, and M. J.
+Franklin. "Volume Under the Surface: A New Accuracy Evaluation Measure for
+Time-Series Anomaly Detection." *Proceedings of the VLDB Endowment*,
+15(11):2774–2787, 2022.
+
+[12] C. Xiao, Z. Gou, W. Tai, K. Zhang, and F. Zhou. "Imputation-based Time-Series
+Anomaly Detection with Conditional Weight-Incremental Diffusion Models." In
+*Proceedings of the 29th ACM SIGKDD Conference on Knowledge Discovery and Data
+Mining*, pages 2742–2751, 2023.
