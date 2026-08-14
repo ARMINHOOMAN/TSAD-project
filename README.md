@@ -32,12 +32,7 @@ decision.
 
 **Backbones.** `DDPM-selective` and `ImDiffusion` are built on the *same* CSDI
 architecture [4], which includes four residual blocks, each combining a temporal Transformer
-layer and a feature Transformer layer. `anomalyfilter.py` imports `DiffCSDI`
-directly from `imdiffusion.py`, so the two methods are architecturally identical
-and differ only in their noise design and decision rule, which is what makes the
-comparison between them informative. `DDPM-vanilla` uses a **simpler Transformer
-denoiser** (`backbone.py`) and serves as a reference point for what a plain
-diffusion model achieves.
+layer and a feature Transformer layer. 
 
 ---
 
