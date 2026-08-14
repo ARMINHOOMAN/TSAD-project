@@ -1,6 +1,6 @@
 #  Multivariate Time-Series Anomaly Detection
 
-. Four unsupervised detectors are trained on the normal split of the **Server
+Four unsupervised detectors are trained on the normal split of the **Server
 Machine Dataset (SMD)** and compared on the labelled test split We aim to show how well a generative model
 captures normal behaviour, and how the resulting anomaly score is turned into a
 decision.
