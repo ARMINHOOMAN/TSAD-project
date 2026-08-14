@@ -196,12 +196,6 @@ is almost saturated. Best value among the four models in **bold**.
 | `anomalyfilter.py` | `imdiffusion`, `utils` | `AnomalyFilter`, `train_anomalyfilter`, `score_anomalyfilter` | `run_experiments.py` |
 | `plots.py` | `utils` | `plot_roc`, `plot_pr`, `plot_imdiff_score`, `plot_imdiff_ensemble` | `run_experiments.py` |
 
-**Prerequisites and data flow.** `config.py` and `utils.py` are leaf modules with
-no internal dependencies and must be importable before anything else. The one
-cross-model dependency worth knowing is that **`anomalyfilter.py` imports
-`DiffCSDI` from `imdiffusion.py`** — this is deliberate, and it is what guarantees
-that DDPM-selective and ImDiffusion share an identical backbone. Editing
-`imdiffusion.py` therefore changes both models.
 
 
 ---
