@@ -80,27 +80,15 @@ score-vs-ground-truth plot `scores_<tag>.png`.
 Short CPU smoke runs (small backbone, 10 DDIM steps). Numbers are meant to show
 the framework and the **relative ordering**, not final tuned scores.
 
-### Synthetic (10 features, 20 epochs)
-
-| model          | F1    | precision | recall | F1 (PA) | ROC-AUC | PR-AUC | params | train_s | infer_s |
-| -------------- | ----- | --------- | ------ | ------- | ------- | ------ | ------ | ------- | ------- |
-| LSTM-VAE       | 0.663 | 0.956     | 0.508  | 0.929   | 0.879   | 0.636  | 56.5k  | 3.9     | 0.13    |
-| DDPM-vanilla   | 0.409 | 0.698     | 0.289  | 0.871   | 0.821   | 0.379  | 80.8k  | 21.6    | 8.6     |
-| DDPM-masking   | 0.461 | 0.618     | 0.367  | 0.839   | 0.815   | 0.416  | 82.1k  | 21.5    | 35.5    |
-| DDPM-selective | 0.531 | 0.765     | 0.406  | 0.929   | 0.837   | 0.506  | 80.8k  | 22.0    | 4.0     |
-
-_On smooth periodic synthetic data a simple LSTM-VAE reconstructs normal patterns
-very well and is hard to beat; among the diffusion regimes the ordering is
-**selective > masking > vanilla**, matching the proposal's hypothesis._
-
 ### SMD `machine-1-1` (38 features, 10 epochs, test-stride 5)
 
-| model          | F1        | precision | recall | F1 (PA) | ROC-AUC   | PR-AUC    | params | train_s | infer_s |
-| -------------- | --------- | --------- | ------ | ------- | --------- | --------- | ------ | ------- | ------- |
-| LSTM-VAE       | 0.477     | 0.504     | 0.454  | 0.998   | 0.879     | 0.515     | 65.5k  | 12.3    | 0.31    |
-| DDPM-vanilla   | **0.736** | 0.683     | 0.797  | 0.998   | **0.975** | **0.783** | 84.5k  | 53.3    | 16.9    |
-| DDPM-masking   | 0.709     | 0.681     | 0.740  | 0.997   | 0.956     | 0.700     | 89.3k  | 52.8    | 81.9    |
-| DDPM-selective | 0.694     | 0.599     | 0.826  | 0.998   | 0.967     | 0.722     | 84.5k  | 54.3    | 7.7     |
+| model           | F1        | precision | recall    | F1 (PA)   | ROC-AUC   | PR-AUC    |
+| --------------- | --------- | --------- | --------- | --------- | --------- | --------- |
+| LSTM-VAE        | 0.607     | 0.589     | 0.625     | 0.998     | 0.896     | 0.567     |
+| DDPM-vanilla    | 0.602     | 0.548     | 0.667     | **0.999** | 0.932     | 0.614     |
+| DDPM-selective  | **0.658** | 0.547     | **0.826** | 0.998     | **0.957** | **0.691** |
+| ImDiffusion     | 0.322     | **0.829** | 0.200     | 0.988     | 0.598     | 0.248     |
+| Random detector | 0.173     | 0.095     | 0.985     | 0.968     | 0.500     | 0.095     |
 
 _On the real benchmark **all three diffusion regimes clearly beat the LSTM-VAE**
 (F1 ≈ 0.69–0.74 / ROC-AUC ≈ 0.96–0.97 / PR-AUC ≈ 0.70–0.78 vs the VAE's
