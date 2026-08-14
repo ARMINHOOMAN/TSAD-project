@@ -88,8 +88,8 @@ Reported metrics:
 ## 4. Installation
 
 ```bash
-git clone https://github.com/ARMINHOOMAN/Anomaly-dtetection-diffusion-model.git
-cd Anomaly-dtetection-diffusion-model
+git clone https://github.com/ARMINHOOMAN/TSAD-project.git
+cd TSAD-project
 pip install -r code/requirements.txt
 ```
 
