@@ -152,22 +152,6 @@ is almost saturated. Best value among the four models in **bold**.
 | ImDiffusion | 0.322 | **0.829** | 0.200 | 0.988 | 0.598 | 0.248 |
 | *Random detector* | *0.173* | *0.095* | *0.985* | *0.968* | *0.500* | *0.095* |
 
-**Selective denoising is the strongest method**, raising PR-AUC from 0.567 for the
-LSTM-VAE baseline to 0.691. Its advantage lies almost entirely in recall (0.826 vs
-0.625) at comparable precision, meaning it surfaces anomalies the baseline misses
-rather than sharpening ones it already finds. Both diffusion regimes with a
-continuous score beat the encoder–decoder baseline on the threshold-free metrics.
-
-**ImDiffusion is last on every aggregate measure yet has the highest precision.**
-This is a thresholding effect, not a training failure. Since the fully denoised
-step has the lowest average error, `tau_t <= tau_T` for every voting step; with
-the paper's `tau_T = 0.02` each step may flag at most 2 % of the series, about 570
-of 28,479 timesteps. The ten steps agree almost completely, so their union is only
-slightly larger: the selected operating point flags roughly 650 points (2.3 %).
-Against a 9.46 % anomaly rate, recall is therefore bounded near 650/2694 ≈ 0.24
-even if every flagged point were correct — and the measured 0.200 sits just under
-that bound. The imputations themselves are accurate on normal data, as the
-`imdiff_score` figure shows.
 
 ---
 
@@ -199,23 +183,6 @@ that bound. The imputations themselves are accurate on normal data, as the
 
 ## 8. Module dependencies
 
-Arrows point from a module to the modules it imports. `run_experiments.py` is the
-only entry point; everything else is a library.
-
-```
-                          run_experiments.py
-                                  │
-   ┌──────────┬──────────┬────────┼─────────┬──────────────┬──────────┐
-   │          │          │        │         │              │          │
-config.py  data.py   baselines.py │   diffusion.py   imdiffusion.py  plots.py
-              │                   │         │              │          │
-              │                   │    backbone.py         │          │
-              │                   │                        │          │
-              └───────────────────┴──── utils.py ──────────┴──────────┘
-                                        ▲
-                                        │
-                              anomalyfilter.py ──► imdiffusion.py (DiffCSDI)
-```
 
 | Module | Imports from the project | Provides | Consumed by |
 |---|---|---|---|
@@ -225,7 +192,7 @@ config.py  data.py   baselines.py │   diffusion.py   imdiffusion.py  plots.py
 | `baselines.py` | — | `LSTMVAE` | `run_experiments.py` |
 | `data.py` | `utils` | `get_data`, `WindowDataset` | `run_experiments.py` |
 | `diffusion.py` | `backbone` | `build_diffusion` → `GaussianDiffusion` | `run_experiments.py` |
-| `imdiffusion.py` | `utils` | `DiffCSDI`, `ImDiffusion`, `train_imdiffusion`, `score_imdiffusion` | `run_experiments.py`, **`anomalyfilter.py`** |
+| `imdiffusion.py` | `utils` | `DiffCSDI`, `ImDiffusion`, `train_imdiffusion`, `score_imdiffusion` | `run_experiments.py`, `anomalyfilter.py` |
 | `anomalyfilter.py` | `imdiffusion`, `utils` | `AnomalyFilter`, `train_anomalyfilter`, `score_anomalyfilter` | `run_experiments.py` |
 | `plots.py` | `utils` | `plot_roc`, `plot_pr`, `plot_imdiff_score`, `plot_imdiff_ensemble` | `run_experiments.py` |
 
@@ -236,21 +203,6 @@ cross-model dependency worth knowing is that **`anomalyfilter.py` imports
 that DDPM-selective and ImDiffusion share an identical backbone. Editing
 `imdiffusion.py` therefore changes both models.
 
-The runtime flow within `run_experiments.py` is:
-
-```
-config.Config
-   └─► data.get_data          →  (train_series, test_series, labels)   z-scored on train stats
-          └─► per model:  train_*(train_series)  →  score_*(test_series)  →  score per timestep
-                 └─► utils.evaluate_scores(score, labels)  →  metrics row
-                        └─► pandas table  →  CSV / Markdown
-                        └─► plots.*                        →  PNG figures
-```
-
-Each model exposes the same pair of functions — a trainer that consumes
-`train_series` and a scorer that consumes `test_series` and returns one score per
-timestep — so adding a model means implementing that pair and registering it in
-`run_experiments.py`.
 
 ---
 
