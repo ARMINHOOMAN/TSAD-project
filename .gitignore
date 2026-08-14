@@ -25,3 +25,13 @@ chat_export.*
 
 # Presentation (kept local)
 Presentation/
+
+# Report sources (kept local)
+report/
+
+# Only results/results is published
+results_gpu/
+results/*.png
+results/*.csv
+results/*.md
+results/R_08042026_11,58PM,50e/
