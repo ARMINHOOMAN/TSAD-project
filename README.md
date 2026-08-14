@@ -1,17 +1,9 @@
-# Noise Design in Diffusion Models for Multivariate Time-Series Anomaly Detection
+#  Multivariate Time-Series Anomaly Detection
 
-Reference implementation and experimental study for the course project of the same
-name. Four unsupervised detectors are trained on the normal split of the **Server
-Machine Dataset (SMD)** and compared on the labelled test split, with the aim of
-separating two things that are usually conflated: how well a generative model
+. Four unsupervised detectors are trained on the normal split of the **Server
+Machine Dataset (SMD)** and compared on the labelled test split We aim to show how well a generative model
 captures normal behaviour, and how the resulting anomaly score is turned into a
 decision.
-
-The headline finding is that the **decision rule matters more than the generative
-model**. ImDiffusion learns the normal dynamics well and attains the highest
-precision of all four methods, yet finishes last on every aggregate metric,
-because its voting threshold can flag at most two per cent of the series while the
-test entity contains 9.46 per cent anomalies.
 
 ---
 
@@ -39,7 +31,7 @@ test entity contains 9.46 per cent anomalies.
 | **ImDiffusion** | imputation-based diffusion | grating mask hides part of the window; the rest conditions the model; step-wise **vote ensemble** over the reverse trajectory | **CSDI** | [1] |
 
 **Backbones.** `DDPM-selective` and `ImDiffusion` are built on the *same* CSDI
-architecture [4] — four residual blocks, each combining a temporal Transformer
+architecture [4], which includes four residual blocks, each combining a temporal Transformer
 layer and a feature Transformer layer. `anomalyfilter.py` imports `DiffCSDI`
 directly from `imdiffusion.py`, so the two methods are architecturally identical
 and differ only in their noise design and decision rule, which is what makes the
@@ -51,22 +43,18 @@ diffusion model achieves.
 
 ## 2. Dataset
 
-**Server Machine Dataset (SMD)** — five weeks of 38-dimensional server telemetry
-from a large internet company (OmniAnomaly release). The experiments use entity
+**Server Machine Dataset (SMD)** : Five weeks of 38-dimensional server telemetry
+from a large internet company (OmniAnomaly release). The experiments use dataset
 `machine-1-1`.
 
-SMD ships a dedicated train/test split, which is what makes the normality
-assumption hold by construction:
+The train/test split of SMD are as below:
 
 - the **train** split is a curated normal-operation period with no labelled
   anomalies, and is the only data the models ever see during training;
 - the **test** split carries point-level labels: 28,479 timesteps of which 2,694
   (9.46 %) are anomalous, grouped into eight segments;
-- z-score normalisation statistics are computed on the **train** split only, so no
-  test information leaks into training.
+- z-score normalisation statistics are computed on the **train** split only.
 
-A synthetic generator is also included (`data.py`) so the pipeline runs without
-any download; it is not used for the reported results.
 
 Download one entity:
 
@@ -84,21 +72,20 @@ done
 Every model produces one anomaly score per timestep by folding windowed scores
 back onto the series:
 
-- **LSTM-VAE, DDPM-vanilla, DDPM-selective** — mean squared reconstruction error
-  between the input window and its reconstruction. `DDPM-selective` additionally
-  smooths the score with a moving average of half the window, following [2].
-- **ImDiffusion** — a **vote count**. At each retained denoising step a residual
+- **LSTM-VAE, DDPM-vanilla, DDPM-selective**: They calculate the mean squared reconstruction error
+  between the input window and its reconstruction. 
+- **ImDiffusion** — a **vote count**: At each retained denoising step a residual
   is thresholded at an adaptive percentile `tau_t = (sum E_T / sum E_t) * tau_T`,
   and the votes are summed over ten steps. The score is therefore an integer in
   `0..10` rather than a continuous value.
 
 Reported metrics:
 
-| Metric | Threshold-free? | Note |
-|---|---|---|
-| best F1, precision, recall | no | threshold chosen by sweeping the score's own quantiles |
-| point-adjusted F1 (`f1_pa`) | no | a whole segment counts as detected if one point in it is flagged |
-| ROC-AUC, PR-AUC | **yes** | the only metrics free of threshold selection |
+| Metric | Note |
+|---|---|
+| best F1, precision, recall |threshold chosen by sweeping the score's own quantiles |
+| point-adjusted F1 (`f1_pa`) |  a whole segment counts as detected if one point in it is flagged |
+| ROC-AUC, PR-AUC | the only metrics free of threshold selection |
 
 Two caveats are central to the study and are discussed at length in the report:
 
